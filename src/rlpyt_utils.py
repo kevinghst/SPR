@@ -148,7 +148,6 @@ class MinibatchRlEvalWandb(MinibatchRlEval):
                     values = [info[k] for info in traj_infos]
                     logger.record_tabular_misc_stat(k,
                                                     values)
-                    pdb.set_trace()
                     wandb.run.summary[k] = np.average(values)
                     self.wandb_info[k + "Average"] = np.average(values)
                     self.wandb_info[k + "Std"] = np.std(values)

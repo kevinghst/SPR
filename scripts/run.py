@@ -7,6 +7,7 @@ should improve the efficiency of the forward/backward passes during training.
 (But both settings may impact hyperparameter selection and learning.)
 
 """
+import pdb
 from rlpyt.experiments.configs.atari.dqn.atari_dqn import configs
 from rlpyt.samplers.serial.sampler import SerialSampler
 from rlpyt.envs.atari.atari_env import AtariTrajInfo
@@ -15,6 +16,7 @@ from rlpyt.utils.logging.context import logger_context
 import wandb
 import torch
 import numpy as np
+import copy
 
 from src.models import SPRCatDqnModel
 from src.rlpyt_utils import OneToOneSerialEvalCollector, SerialSampler, MinibatchRlEvalWandb
@@ -72,7 +74,8 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument('--game', help='Atari game', default='ms_pacman')
-    parser.add_argument('--seed', type=int, default=0)
+    parser.add_argument('--seeds', type=int, default=1)
+    parser.add_argument('--seed_start', type=int, default=0)
     parser.add_argument('--grayscale', type=int, default=1)
     parser.add_argument('--framestack', type=int, default=4)
     parser.add_argument('--imagesize', type=int, default=84)
@@ -129,7 +132,7 @@ if __name__ == "__main__":
     parser.add_argument('--final-eval-only', type=int, default=1)
     parser.add_argument('--time-offset', type=int, default=0)
     parser.add_argument('--project', type=str, default="mpr")
-    parser.add_argument('--entity', type=str, default="abs-world-models")
+    parser.add_argument('--entity', type=str, default="kevinghst")
     parser.add_argument('--cuda_idx', help='gpu to use ', type=int, default=0)
     parser.add_argument('--max-grad-norm', type=float, default=10., help='Max Grad Norm')
     parser.add_argument('--public', action='store_true', help='If set, uses anonymous wandb logging')
@@ -137,17 +140,30 @@ if __name__ == "__main__":
     parser.add_argument('--disable_log', action='store_true', help='no wandb')
     parser.add_argument('--skip_init_eval', action='store_true', help='no initial evaluation')
 
-    args = parser.parse_args()
+    og_args = parser.parse_args()
 
-    if args.disable_log:
-        wandb.init(mode="disabled")
-    else:
-        if args.public:
-            wandb.init(anonymous="allow", config=args, tags=[args.tag] if args.tag else None, dir=args.wandb_dir)
+
+    for i in range(og_args.seeds):
+        args = copy.deepcopy(og_args)
+
+        seed = i + args.seed_start
+        args.seed = seed
+
+        exp_name = f'{args.game}_{seed}'
+
+        if args.disable_log:
+            wandb.init(mode="disabled")
         else:
-            wandb.init(project=args.project, entity=args.entity, config=args, tags=[args.tag] if args.tag else None, dir=args.wandb_dir)
-    wandb.config.update(vars(args))
-    build_and_train(game=args.game,
-                    cuda_idx=args.cuda_idx,
-                    args=args)
+            if args.public:
+                wandb.init(
+                    anonymous="allow", name=exp_name, config=args, tags=[args.tag] if args.tag else None, dir=args.wandb_dir
+                )
+            else:
+                wandb.init(
+                    project=args.project, entity=args.entity, name=exp_name, config=args, tags=[args.tag] if args.tag else None, dir=args.wandb_dir
+                )
+        wandb.config.update(vars(args))
+        build_and_train(game=args.game,
+                        cuda_idx=args.cuda_idx,
+                        args=args)
 
