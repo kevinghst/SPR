@@ -57,6 +57,7 @@ def build_and_train(game="pong", run_ID=0, cuda_idx=0, args=None):
         log_interval_steps=args.n_steps//args.num_logs,
         seed=args.seed,
         final_eval_only=args.final_eval_only,
+        skip_init_eval=args.skip_init_eval
     )
     config = dict(game=game)
     name = "dqn_" + game
@@ -134,7 +135,7 @@ if __name__ == "__main__":
     parser.add_argument('--public', action='store_true', help='If set, uses anonymous wandb logging')
 
     parser.add_argument('--disable_log', action='store_true', help='no wandb')
-    parser.add_argument('--no_init_eval', action='store_true', help='no initial evaluation')
+    parser.add_argument('--skip_init_eval', action='store_true', help='no initial evaluation')
 
     args = parser.parse_args()
 

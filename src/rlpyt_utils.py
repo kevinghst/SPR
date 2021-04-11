@@ -15,6 +15,8 @@ import torch
 import numpy as np
 import time
 
+import pdb
+
 
 atari_human_scores = dict(
     alien=7127.7, amidar=1719.5, assault=742.0, asterix=8503.3,
@@ -70,9 +72,10 @@ def maybe_update_summary(key, value):
 
 class MinibatchRlEvalWandb(MinibatchRlEval):
 
-    def __init__(self, final_eval_only=False, *args, **kwargs):
+    def __init__(self, final_eval_only=False, skip_init_eval=False, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.final_eval_only = final_eval_only
+        self.skip_init_eval = skip_init_eval
 
     def log_diagnostics(self, itr, eval_traj_infos, eval_time):
         cum_steps = (itr + 1) * self.sampler.batch_size * self.world_size
@@ -145,7 +148,7 @@ class MinibatchRlEvalWandb(MinibatchRlEval):
                     values = [info[k] for info in traj_infos]
                     logger.record_tabular_misc_stat(k,
                                                     values)
-
+                    pdb.set_trace()
                     wandb.run.summary[k] = np.average(values)
                     self.wandb_info[k + "Average"] = np.average(values)
                     self.wandb_info[k + "Std"] = np.std(values)
@@ -178,6 +181,8 @@ class MinibatchRlEvalWandb(MinibatchRlEval):
         self._opt_infos = {k: list() for k in self._opt_infos}  # (reset)
 
     def evaluate_agent(self, itr):
+        if self.skip_init_eval:
+            return [], 0
         """
         Record offline evaluation of agent performance, by ``sampler.evaluate_agent()``.
         """
