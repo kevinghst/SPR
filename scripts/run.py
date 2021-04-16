@@ -67,7 +67,7 @@ def build_and_train(game="pong", run_ID=0, cuda_idx=0, args=None):
     with logger_context(log_dir, run_ID, name, config, snapshot_mode="last"):
         runner.train()
 
-    quit()
+    return None
 
 
 if __name__ == "__main__":
@@ -166,4 +166,4 @@ if __name__ == "__main__":
         build_and_train(game=args.game,
                         cuda_idx=args.cuda_idx,
                         args=args)
-
+        wandb.finish()
