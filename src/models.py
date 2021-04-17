@@ -13,6 +13,7 @@ from kornia.augmentation import RandomAffine,\
 from kornia.filters import GaussianBlur2d
 import copy
 import wandb
+import pdb
 
 
 class SPRCatDqnModel(torch.nn.Module):
@@ -51,6 +52,7 @@ class SPRCatDqnModel(torch.nn.Module):
             model_rl,
             noisy_nets_std,
             residual_tm,
+            pred_hidden_ratio,
             use_maxpool=False,
             channels=None,  # None uses default.
             kernel_sizes=None,
@@ -235,11 +237,12 @@ class SPRCatDqnModel(torch.nn.Module):
 
                     global_spr_size = self.hidden_size*self.pixels
                 if final_classifier == "mlp":
+                    global_final_hidden_size = int(global_spr_size * pred_hidden_ratio)
                     self.global_final_classifier = nn.Sequential(
-                        nn.Linear(global_spr_size, global_spr_size*2),
-                        nn.BatchNorm1d(global_spr_size*2),
+                        nn.Linear(global_spr_size, global_final_hidden_size),
+                        nn.BatchNorm1d(global_final_hidden_size),
                         nn.ReLU(),
-                        nn.Linear(global_spr_size*2, global_spr_size)
+                        nn.Linear(global_final_hidden_size, global_spr_size)
                     )
                 elif final_classifier == "linear":
                     self.global_final_classifier = nn.Sequential(

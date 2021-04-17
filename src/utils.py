@@ -87,4 +87,7 @@ def set_config(args, game):
     config["algo"]["delta_clip"] = args.delta_clip
     config["algo"]["prioritized_replay"] = args.prioritized_replay
 
+    # new new arguments
+    config["model"]["pred_hidden_ratio"] = args.pred_hidden_ratio
+
     return config
