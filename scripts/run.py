@@ -131,39 +131,45 @@ if __name__ == "__main__":
     parser.add_argument('--eps-final', type=float, default=0.)
     parser.add_argument('--final-eval-only', type=int, default=1)
     parser.add_argument('--time-offset', type=int, default=0)
-    parser.add_argument('--project', type=str, default="mpr")
-    parser.add_argument('--entity', type=str, default="kevinghst")
     parser.add_argument('--cuda_idx', help='gpu to use ', type=int, default=0)
     parser.add_argument('--max-grad-norm', type=float, default=10., help='Max Grad Norm')
-    parser.add_argument('--public', action='store_true', help='If set, uses anonymous wandb logging')
-
-    parser.add_argument('--disable_log', action='store_true', help='no wandb')
     parser.add_argument('--skip_init_eval', action='store_true', help='no initial evaluation')
+
+    # wandb
+    parser.add_argument('--disable_log', action='store_true', help='no wandb')
+    parser.add_argument('--project', type=str, default="mpr")
+    parser.add_argument('--entity', type=str, default="kevinghst")
+    parser.add_argument('--public', action='store_true', help='If set, uses anonymous wandb logging')
+    parser.add_argument('--exp_code', type=str, default="")
 
     og_args = parser.parse_args()
 
 
-    for i in range(og_args.seeds):
-        args = copy.deepcopy(og_args)
+    games = og_args.game.split(',')
+    games = [x.strip() for x in games]
 
-        seed = i + args.seed_start
-        args.seed = seed
+    for game in games:
+        for i in range(og_args.seeds):
+            args = copy.deepcopy(og_args)
 
-        exp_name = f'{args.game}_{seed}'
+            seed = i + args.seed_start
+            args.seed = seed
 
-        if args.disable_log:
-            wandb.init(mode="disabled")
-        else:
-            if args.public:
-                wandb.init(
-                    anonymous="allow", name=exp_name, config=args, tags=[args.tag] if args.tag else None, dir=args.wandb_dir
-                )
+            exp_name = f'{game}_{seed}_{args.exp_code}'
+
+            if args.disable_log:
+                wandb.init(mode="disabled")
             else:
-                wandb.init(
-                    project=args.project, entity=args.entity, name=exp_name, config=args, tags=[args.tag] if args.tag else None, dir=args.wandb_dir
-                )
-        wandb.config.update(vars(args))
-        build_and_train(game=args.game,
-                        cuda_idx=args.cuda_idx,
-                        args=args)
-        wandb.finish()
+                if args.public:
+                    wandb.init(
+                        anonymous="allow", name=exp_name, config=args, tags=[args.tag] if args.tag else None, dir=args.wandb_dir
+                    )
+                else:
+                    wandb.init(
+                        project=args.project, entity=args.entity, name=exp_name, config=args, tags=[args.tag] if args.tag else None, dir=args.wandb_dir
+                    )
+            wandb.config.update(vars(args))
+            build_and_train(game=game,
+                            cuda_idx=args.cuda_idx,
+                            args=args)
+            wandb.finish()

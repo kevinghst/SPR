@@ -110,3 +110,7 @@ tmp/
 wandb
 philly/
 results/
+
+# slurm related
+/logs
+*.out
