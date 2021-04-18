@@ -53,7 +53,6 @@ class SPRCatDqnModel(torch.nn.Module):
             noisy_nets_std,
             residual_tm,
             pred_hidden_ratio,
-            pred_decay,
             use_maxpool=False,
             channels=None,  # None uses default.
             kernel_sizes=None,
@@ -174,7 +173,6 @@ class SPRCatDqnModel(torch.nn.Module):
             self.momentum_encoder = momentum_encoder
             self.momentum_tau = momentum_tau
             self.shared_encoder = shared_encoder
-            self.pred_decay = pred_decay
             assert not (self.shared_encoder and self.momentum_encoder)
 
             # in case someone tries something silly like --local-spr 2
@@ -289,11 +287,7 @@ class SPRCatDqnModel(torch.nn.Module):
         if self.noisy:
             self.head.set_sampling(sampling)
 
-    def spr_loss(self, f_x1s, f_x2s):
-        f_x1 = F.normalize(f_x1s.float(), p=2., dim=-1, eps=1e-3)
-        f_x2 = F.normalize(f_x2s.float(), p=2., dim=-1, eps=1e-3)
-        loss = F.mse_loss(f_x1, f_x2, reduction="none").sum(-1).mean(0)
-
+    def pred_l2_loss(self):
         l2_reg = None
         for W in self.global_final_classifier.parameters():
             if l2_reg is None:
@@ -301,9 +295,17 @@ class SPRCatDqnModel(torch.nn.Module):
             else:
                 l2_reg = l2_reg + W.norm(2)**2
 
-        pdb.set_trace()
+        return l2_reg
 
-        loss += self.pred_decay * l2_reg
+    def spr_loss(self, f_x1s, f_x2s):
+        f_x1 = F.normalize(f_x1s.float(), p=2., dim=-1, eps=1e-3)
+        f_x2 = F.normalize(f_x2s.float(), p=2., dim=-1, eps=1e-3)
+
+        # f_x1.shape = [1, 6, 32, 512]
+        # f_x2.shape = [1, 6, 32, 512]
+
+        loss = F.mse_loss(f_x1, f_x2, reduction="none").sum(-1).mean(0)
+        # loss.shape = [6, 32]
 
         return loss
 
@@ -483,7 +485,7 @@ class SPRCatDqnModel(torch.nn.Module):
             else:
                 spr_loss = torch.zeros((self.jumps + 1, observation.shape[1]), device=latent.device)
 
-            return log_pred_ps, pred_reward, spr_loss
+            return log_pred_ps, pred_reward, spr_loss #[6, 32]
 
         else:
             aug_factor = self.target_augmentation if not eval else self.eval_augmentation

@@ -89,6 +89,6 @@ def set_config(args, game):
 
     # new new arguments
     config["model"]["pred_hidden_ratio"] = args.pred_hidden_ratio
-    config["model"]["pred_decay"] = args.pred_decay
+    config["algo"]["pred_decay"] = args.pred_decay
 
     return config
