@@ -53,6 +53,7 @@ class SPRCatDqnModel(torch.nn.Module):
             noisy_nets_std,
             residual_tm,
             pred_hidden_ratio,
+            pred_decay,
             use_maxpool=False,
             channels=None,  # None uses default.
             kernel_sizes=None,
@@ -173,6 +174,7 @@ class SPRCatDqnModel(torch.nn.Module):
             self.momentum_encoder = momentum_encoder
             self.momentum_tau = momentum_tau
             self.shared_encoder = shared_encoder
+            self.pred_decay = pred_decay
             assert not (self.shared_encoder and self.momentum_encoder)
 
             # in case someone tries something silly like --local-spr 2
@@ -291,6 +293,18 @@ class SPRCatDqnModel(torch.nn.Module):
         f_x1 = F.normalize(f_x1s.float(), p=2., dim=-1, eps=1e-3)
         f_x2 = F.normalize(f_x2s.float(), p=2., dim=-1, eps=1e-3)
         loss = F.mse_loss(f_x1, f_x2, reduction="none").sum(-1).mean(0)
+
+        l2_reg = None
+        for W in self.global_final_classifier.parameters():
+            if l2_reg is None:
+                l2_reg = W.norm(2)**2
+            else:
+                l2_reg = l2_reg + W.norm(2)**2
+
+        pdb.set_trace()
+
+        loss += self.pred_decay * l2_reg
+
         return loss
 
     def global_spr_loss(self, latents, target_latents, observation):

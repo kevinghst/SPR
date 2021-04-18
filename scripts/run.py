@@ -137,6 +137,7 @@ if __name__ == "__main__":
 
     # spr related
     parser.add_argument('--pred_hidden_ratio', type=float, default=2.)
+    parser.add_argument('--pred_decay', type=float, default=0.)
 
     # wandb
     parser.add_argument('--disable_log', action='store_true', help='no wandb')
