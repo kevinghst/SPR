@@ -36,7 +36,7 @@ class SPRCategoricalDQN(CategoricalDQN):
                  model_rl_weight=1.,
                  reward_loss_weight=1.,
                  model_spr_weight=1.,
-                 pred_decay=1.,
+                 pred_decay=0.,
                  time_offset=0,
                  distributional=1,
                  jumps=0,
@@ -131,6 +131,7 @@ class SPRCategoricalDQN(CategoricalDQN):
             return opt_info
         for _ in range(self.updates_per_optimize):
             samples_from_replay = self.replay_buffer.sample_batch(self.batch_size)
+
             loss, td_abs_errors, model_rl_loss, reward_loss,\
             t0_spr_loss, model_spr_loss, pred_l2_loss = self.loss(samples_from_replay)
             spr_loss = self.t0_spr_loss_weight*t0_spr_loss + self.model_spr_weight*model_spr_loss
@@ -270,7 +271,7 @@ class SPRCategoricalDQN(CategoricalDQN):
         if self.model.noisy:
             self.model.head.reset_noise()
         # start = time.time()
-        log_pred_ps, pred_rew, spr_loss\
+        log_pred_ps, pred_rew, spr_loss, pred_l2_loss\
             = self.agent(samples.all_observation.to(self.agent.device),
                          samples.all_action.to(self.agent.device),
                          samples.all_reward.to(self.agent.device),
@@ -297,6 +298,9 @@ class SPRCategoricalDQN(CategoricalDQN):
         nonterminals = nonterminals[self.model.time_offset:
                                     self.jumps + self.model.time_offset+1]
         spr_loss = spr_loss*nonterminals
+
+
+
         if self.jumps > 0:
             # [6, 32]
             model_spr_loss = spr_loss[1:].mean(0) # [32]
@@ -317,7 +321,6 @@ class SPRCategoricalDQN(CategoricalDQN):
             rl_loss = rl_loss * weights
             model_rl_loss = model_rl_loss * weights
 
-        pred_l2_loss = self.model.pred_l2_loss().cpu()
 
         return rl_loss.mean(), KL, \
                model_rl_loss.mean(),\

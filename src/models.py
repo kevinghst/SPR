@@ -482,10 +482,12 @@ class SPRCatDqnModel(torch.nn.Module):
 
             if self.use_spr:
                 spr_loss = self.do_spr_loss(pred_latents, observation)
+                pred_l2_loss = self.pred_l2_loss().cpu()
             else:
                 spr_loss = torch.zeros((self.jumps + 1, observation.shape[1]), device=latent.device)
+                pred_l2_loss = torch.zeros(())
 
-            return log_pred_ps, pred_reward, spr_loss #[6, 32]
+            return log_pred_ps, pred_reward, spr_loss, pred_l2_loss #[6, 32]
 
         else:
             aug_factor = self.target_augmentation if not eval else self.eval_augmentation
