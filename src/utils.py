@@ -19,6 +19,7 @@ def set_config(args, game):
     config['env']['game'] = game
     config["env"]["grayscale"] = args.grayscale
     config["env"]["num_img_obs"] = args.framestack
+    config["env"]["repeat_action_probability"] = args.repeat_action_probability
     config["eval_env"]["game"] = config["env"]["game"]
     config["eval_env"]["grayscale"] = args.grayscale
     config["eval_env"]["num_img_obs"] = args.framestack
@@ -89,6 +90,7 @@ def set_config(args, game):
 
     # new new arguments
     config["model"]["pred_hidden_ratio"] = args.pred_hidden_ratio
+    config["model"]["encoder_type"] = args.encoder_type
     config["algo"]["pred_decay"] = args.pred_decay
 
     return config

@@ -29,7 +29,7 @@ from src.utils import set_config
 def build_and_train(game="pong", run_ID=0, cuda_idx=0, args=None):
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
-    env = AtariEnv(repeat_action_probability=args.repeat_action_probability)
+    env = AtariEnv
     config = set_config(args, game)
 
     sampler = SerialSampler(
@@ -134,6 +134,9 @@ if __name__ == "__main__":
     parser.add_argument('--cuda_idx', help='gpu to use ', type=int, default=0)
     parser.add_argument('--max-grad-norm', type=float, default=10., help='Max Grad Norm')
     parser.add_argument('--skip_init_eval', action='store_true', help='no initial evaluation')
+
+    # model
+    parser.add_argument('--encoder_type', type=str, default='conv2d', choices=["conv2d", "resnet18"])
 
     # env related
     parser.add_argument('--repeat_action_probability', type=float, default=0.25)

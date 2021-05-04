@@ -14,6 +14,7 @@ from rlpyt.spaces.int_box import IntBox
 from rlpyt.utils.quick_args import save__init__args
 from rlpyt.samplers.collections import TrajInfo
 
+import pdb
 
 EnvInfo = namedtuple("EnvInfo", ["game_score", "traj_done"])
 

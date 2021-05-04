@@ -15,6 +15,7 @@ import copy
 import wandb
 import pdb
 
+from src.encoder import resnet18
 
 class SPRCatDqnModel(torch.nn.Module):
     """2D conlutional network feeding into MLP with ``n_atoms`` outputs
@@ -53,6 +54,7 @@ class SPRCatDqnModel(torch.nn.Module):
             noisy_nets_std,
             residual_tm,
             pred_hidden_ratio,
+            encoder_type,
             use_maxpool=False,
             channels=None,  # None uses default.
             kernel_sizes=None,
@@ -112,15 +114,21 @@ class SPRCatDqnModel(torch.nn.Module):
         self.dueling = dueling
         f, c = image_shape[:2]
         in_channels = np.prod(image_shape[:2])
-        self.conv = Conv2dModel(
-            in_channels=in_channels,
-            channels=[32, 64, 64],
-            kernel_sizes=[8, 4, 3],
-            strides=[4, 2, 1],
-            paddings=[0, 0, 0],
-            use_maxpool=False,
-            dropout=dropout,
-        )
+
+        if encoder_type == 'conv2d':
+            self.conv = Conv2dModel(
+                in_channels=in_channels,
+                channels=[32, 64, 64],
+                kernel_sizes=[8, 4, 3],
+                strides=[4, 2, 1],
+                paddings=[0, 0, 0],
+                use_maxpool=False,
+                dropout=dropout,
+            )
+        elif encoder_type == 'resnet18':
+            self.conv = resnet18()
+        else:
+            raise NotImplementedError
 
         fake_input = torch.zeros(1, f*c, imagesize, imagesize)
         fake_output = self.conv(fake_input)
@@ -341,11 +349,15 @@ class SPRCatDqnModel(torch.nn.Module):
         return local_loss
 
     def do_spr_loss(self, pred_latents, observation):
+        # pred_latents.shape = [6,  32, 64, 7, 7]
+        # observation.shape =  [16, 32, 4, 1, 84, 84]
+
         pred_latents = torch.stack(pred_latents, 1)
         latents = pred_latents[:observation.shape[1]].flatten(0, 1)  # batch*jumps, *
         neg_latents = pred_latents[observation.shape[1]:].flatten(0, 1)
         latents = torch.cat([latents, neg_latents], 0)
         target_images = observation[self.time_offset:self.jumps + self.time_offset+1].transpose(0, 1).flatten(2, 3)
+        # [16, 32, 4, 1, 84, 84] --> [32, 6, 4, 84, 84]
         target_images = self.transform(target_images, True)
 
         if not self.momentum_encoder and not self.shared_encoder:
@@ -415,11 +427,15 @@ class SPRCatDqnModel(torch.nn.Module):
     def stem_forward(self, img, prev_action=None, prev_reward=None):
         """Returns the normalized output of convolutional layers."""
         # Infer (presence of) leading dimensions: [T,B], [B], or [].
+
+        # img.shape = [32, 4, 84, 84]
         lead_dim, T, B, img_shape = infer_leading_dims(img, 3)
 
         conv_out = self.conv(img.view(T * B, *img_shape))  # Fold if T dimension.
         if self.renormalize:
             conv_out = renormalize(conv_out, -3)
+
+        # conv_out.shape = [32, 64, 7, 7]
         return conv_out
 
     def head_forward(self,
@@ -449,15 +465,24 @@ class SPRCatDqnModel(torch.nn.Module):
         For convenience reasons with DistributedDataParallel the forward method
         has been split into two cases, one for training and one for eval.
         """
+
+
         if train:
+            # observation.shape = [16, 32, 4, 1, 84, 84] <-- when jumps == 5
+            # prev_action.shape = [16, 32]
+            # prev_reward.shape = [16, 32]
+
+            # observation.shape = [21, 32, 4, 1, 84, 84] <-- when jumps == 10
+
             log_pred_ps = []
             pred_reward = []
             pred_latents = []
             input_obs = observation[0].flatten(1, 2)
-            input_obs = self.transform(input_obs, augment=True)
+            input_obs = self.transform(input_obs, augment=True) # [32, 4, 84, 84]
             latent = self.stem_forward(input_obs,
                                        prev_action[0],
                                        prev_reward[0])
+            # [32, 64, 7, 7]
             log_pred_ps.append(self.head_forward(latent,
                                                  prev_action[0],
                                                  prev_reward[0],
@@ -658,7 +683,8 @@ class DQNDistributionalDuelingHeadModel(torch.nn.Module):
         return value + (advantage - advantage.mean(dim=1, keepdim=True))
 
     def advantage(self, input):
-        x = self.advantage_hidden(input)
+        # input = [1, 64, 6, 6] or [1, 64, 7, 7]
+        x = self.advantage_hidden(input) # [1, 256]
         x = self.advantage_out(x)
         x = x.view(-1, self._output_size, self._n_atoms)
         return x + self.advantage_bias
