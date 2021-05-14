@@ -10,7 +10,7 @@
 #SBATCH --open-mode=append
 #SBATCH --export=ALL
 
-singularity exec --nv --overlay /scratch/wz1232/overlay/SPR_amd.ext3:rw /scratch/wz1232/overlay/base.sif /bin/bash -c "
+singularity exec --rocm --overlay /scratch/wz1232/overlay/SPR_amd.ext3:rw /scratch/wz1232/overlay/base.sif /bin/bash -c "
 
 source /ext3/env.sh
 conda activate
