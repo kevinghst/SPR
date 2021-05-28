@@ -55,6 +55,9 @@ class SPRCatDqnModel(torch.nn.Module):
             residual_tm,
             pred_hidden_ratio,
             encoder_type,
+            transition_type,
+            proj_hidden_size,
+            gru_input_size,
             use_maxpool=False,
             channels=None,  # None uses default.
             kernel_sizes=None,
@@ -132,9 +135,20 @@ class SPRCatDqnModel(torch.nn.Module):
 
         fake_input = torch.zeros(1, f*c, imagesize, imagesize)
         fake_output = self.conv(fake_input)
+
+
         self.hidden_size = fake_output.shape[1]
         self.pixels = fake_output.shape[-1]*fake_output.shape[-2]
         print("Spatial latent size is {}".format(fake_output.shape[1:]))
+
+        if proj_hidden_size:
+            self.conv_proj = nn.Sequential(
+                nn.Flatten(1, -1),
+                nn.Linear(self.hidden_size * self.pixels, proj_hidden_size),
+                nn.ReLU(),
+            )
+        else:
+            self.conv_proj = nn.Identity()
 
         self.jumps = jumps
         self.model_rl = model_rl
@@ -142,6 +156,7 @@ class SPRCatDqnModel(torch.nn.Module):
         self.target_augmentation = target_augmentation
         self.eval_augmentation = eval_augmentation
         self.num_actions = output_size
+        self.transition_type = transition_type
 
         if dueling:
             self.head = DQNDistributionalDuelingHeadModel(self.hidden_size,
@@ -150,7 +165,8 @@ class SPRCatDqnModel(torch.nn.Module):
                                                           pixels=self.pixels,
                                                           noisy=self.noisy,
                                                           n_atoms=n_atoms,
-                                                          std_init=noisy_nets_std)
+                                                          std_init=noisy_nets_std,
+                                                          proj_hidden_size=proj_hidden_size)
         else:
             self.head = DQNDistributionalHeadModel(self.hidden_size,
                                                    output_size,
@@ -161,15 +177,23 @@ class SPRCatDqnModel(torch.nn.Module):
                                                    std_init=noisy_nets_std)
 
         if self.jumps > 0:
-            self.dynamics_model = TransitionModel(channels=self.hidden_size,
-                                                  num_actions=output_size,
-                                                  pixels=self.pixels,
-                                                  hidden_size=self.hidden_size,
-                                                  limit=1,
-                                                  blocks=dynamics_blocks,
-                                                  norm_type=norm_type,
-                                                  renormalize=renormalize,
-                                                  residual=residual_tm)
+            if transition_type == 'gru':
+                self.dynamics_model = GRUModel(
+                    input_size = gru_input_size,
+                    hidden_size = proj_hidden_size,
+                    num_layers = 1,
+                    num_actions = self.num_actions,
+                )
+            else:
+                self.dynamics_model = TransitionModel(channels=self.hidden_size,
+                                                      num_actions=output_size,
+                                                      pixels=self.pixels,
+                                                      hidden_size=self.hidden_size,
+                                                      limit=1,
+                                                      blocks=dynamics_blocks,
+                                                      norm_type=norm_type,
+                                                      renormalize=renormalize,
+                                                      residual=residual_tm)
         else:
             self.dynamics_model = nn.Identity()
 
@@ -263,9 +287,11 @@ class SPRCatDqnModel(torch.nn.Module):
 
             if self.momentum_encoder:
                 self.target_encoder = copy.deepcopy(self.conv)
+                self.target_encoder_proj = copy.deepcopy(self.conv_proj)
                 self.global_target_classifier = copy.deepcopy(self.global_target_classifier)
                 self.local_target_classifier = copy.deepcopy(self.local_target_classifier)
                 for param in (list(self.target_encoder.parameters())
+                            + list(self.target_encoder_proj.parameters())
                             + list(self.global_target_classifier.parameters())
                             + list(self.local_target_classifier.parameters())):
                     param.requires_grad = False
@@ -318,6 +344,7 @@ class SPRCatDqnModel(torch.nn.Module):
         return loss
 
     def global_spr_loss(self, latents, target_latents, observation):
+                            # [192, 600], [192, 600],  [16, 32, 4, 1, 84, 84]
         global_latents = self.global_classifier(latents)
         global_latents = self.global_final_classifier(global_latents)
         with torch.no_grad() if self.momentum_encoder else dummy_context_mgr():
@@ -349,7 +376,7 @@ class SPRCatDqnModel(torch.nn.Module):
         return local_loss
 
     def do_spr_loss(self, pred_latents, observation):
-        # pred_latents.shape = [6,  32, 64, 7, 7]
+        # pred_latents.shape = [6,  32, 64, 7, 7] or [6, 32, 600]
         # observation.shape =  [16, 32, 4, 1, 84, 84]
 
         pred_latents = torch.stack(pred_latents, 1)
@@ -367,6 +394,8 @@ class SPRCatDqnModel(torch.nn.Module):
             if self.renormalize:
                 target_latents = renormalize(target_latents, -3)
 
+        target_latents = self.target_encoder_proj(target_latents)
+
         if self.local_spr:
             local_loss = self.local_spr_loss(latents, target_latents, observation)
         else:
@@ -383,6 +412,13 @@ class SPRCatDqnModel(torch.nn.Module):
             update_state_dict(self.target_encoder,
                               self.conv.state_dict(),
                               self.momentum_tau)
+
+            update_state_dict(
+                self.target_encoder_proj,
+                self.conv_proj.state_dict(),
+                self.momentum_tau
+            )
+
             if self.classifier_type != "bilinear":
                 # q_l1 is also bilinear for local
                 if self.local_spr and self.classifier_type != "q_l1":
@@ -443,8 +479,10 @@ class SPRCatDqnModel(torch.nn.Module):
                      prev_action,
                      prev_reward,
                      logits=False):
-        lead_dim, T, B, img_shape = infer_leading_dims(conv_out, 3)
-        p = self.head(conv_out)
+        if len(conv_out.shape) > 2:
+            lead_dim, T, B, img_shape = infer_leading_dims(conv_out, 3)
+        # 1, 1, 32, [64, 7, 7]
+        p = self.head(conv_out) # [32, 4, 51]
 
         if self.distributional:
             if logits:
@@ -455,7 +493,9 @@ class SPRCatDqnModel(torch.nn.Module):
             p = p.squeeze(-1)
 
         # Restore leading dimensions: [T,B], [B], or [], as input.
-        p = restore_leading_dims(p, lead_dim, T, B)
+        if len(conv_out.shape) > 2:
+            p = restore_leading_dims(p, lead_dim, T, B) # [32, 4, 51]
+        # [32, 4, 51]
         return p
 
     def forward(self, observation,
@@ -481,15 +521,19 @@ class SPRCatDqnModel(torch.nn.Module):
             input_obs = self.transform(input_obs, augment=True) # [32, 4, 84, 84]
             latent = self.stem_forward(input_obs,
                                        prev_action[0],
-                                       prev_reward[0])
-            # [32, 64, 7, 7]
+                                       prev_reward[0]) # [32, 64, 7, 7]
+
+            latent = self.conv_proj(latent)
+
             log_pred_ps.append(self.head_forward(latent,
                                                  prev_action[0],
                                                  prev_reward[0],
-                                                 logits=True))
-            pred_latents.append(latent)
+                                                 logits=True)) # [32, 4, 51]
+
+            pred_latents.append(latent) #[32, 64, 7, 7] vs [32, 600]
+
             if self.jumps > 0:
-                pred_rew = self.dynamics_model.reward_predictor(pred_latents[0])
+                pred_rew = self.dynamics_model.reward_predictor(pred_latents[0]) #[32, 3]
                 pred_reward.append(F.log_softmax(pred_rew, -1))
 
                 for j in range(1, self.jumps + 1):
@@ -528,6 +572,9 @@ class SPRCatDqnModel(torch.nn.Module):
             conv_out = self.conv(img.view(T * B, *img_shape))  # Fold if T dimension.
             if self.renormalize:
                 conv_out = renormalize(conv_out, -3)
+
+            conv_out = self.conv_proj(conv_out)
+
             p = self.head(conv_out)
 
             if self.distributional:
@@ -645,28 +692,39 @@ class DQNDistributionalDuelingHeadModel(torch.nn.Module):
                  hidden_size=256,
                  grad_scale=2 ** (-1 / 2),
                  noisy=0,
-                 std_init=0.1):
+                 std_init=0.1,
+                 proj_hidden_size=0):
         super().__init__()
+
+        input_size = proj_hidden_size if proj_hidden_size else pixels * input_channels
+
         if noisy:
-            self.linears = [NoisyLinear(pixels * input_channels, hidden_size, std_init=std_init),
+
+
+            self.linears = [NoisyLinear(input_size, hidden_size, std_init=std_init),
                             NoisyLinear(hidden_size, output_size * n_atoms, std_init=std_init),
-                            NoisyLinear(pixels * input_channels, hidden_size, std_init=std_init),
+                            NoisyLinear(input_size, hidden_size, std_init=std_init),
                             NoisyLinear(hidden_size, n_atoms, std_init=std_init)
                             ]
         else:
-            self.linears = [nn.Linear(pixels * input_channels, hidden_size),
+            self.linears = [nn.Linear(input_size, hidden_size),
                             nn.Linear(hidden_size, output_size * n_atoms),
-                            nn.Linear(pixels * input_channels, hidden_size),
+                            nn.Linear(input_size, hidden_size),
                             nn.Linear(hidden_size, n_atoms)
                             ]
-        self.advantage_layers = [nn.Flatten(-3, -1),
+
+        flatten = nn.Identity() if proj_hidden_size else nn.Flatten(-3, -1)
+
+        self.advantage_layers = [flatten,
                                  self.linears[0],
                                  nn.ReLU(),
                                  self.linears[1]]
-        self.value_layers = [nn.Flatten(-3, -1),
+
+        self.value_layers = [flatten,
                              self.linears[2],
                              nn.ReLU(),
                              self.linears[3]]
+
         self.advantage_hidden = nn.Sequential(*self.advantage_layers[:3])
         self.advantage_out = self.advantage_layers[3]
         self.advantage_bias = torch.nn.Parameter(torch.zeros(n_atoms), requires_grad=True)
@@ -719,7 +777,8 @@ class QL1Head(nn.Module):
         self.out_features = sum([e.out_features for e in self.encoders])
 
     def forward(self, x):
-        x = x.flatten(-3, -1)
+        if len(x.shape) > 2:
+            x = x.flatten(-3, -1)
         representations = []
         for encoder in self.encoders:
             encoder.noise_override = self.noisy
@@ -949,6 +1008,44 @@ def from_categorical(distribution, limit=300, logits=True):
     weights = torch.linspace(-limit, limit, num_atoms, device=distribution.device).float()
     return distribution @ weights
 
+class GRUModel(nn.Module):
+    def __init__(self, input_size, hidden_size, num_layers, num_actions):
+        super().__init__()
+        self.input_size = input_size
+        self.hidden_size = hidden_size
+        self.num_layers = num_layers
+        self.num_actions = num_actions
+
+        self.embed = nn.Embedding(
+            num_actions,
+            input_size
+        )
+
+        self.cell = nn.GRU(
+            input_size = input_size,
+            hidden_size = hidden_size,
+            num_layers = num_layers,
+            batch_first = True,
+        )
+
+        self.reward_predictor = nn.Linear(
+            hidden_size, 3
+        )
+
+        self.train()
+
+    def forward(self, repr, action):
+        action = self.embed(action)
+
+        action = torch.unsqueeze(action, 1) # [32, 1, 250]
+        repr = torch.unsqueeze(repr, 0) # [1, 32, 600]
+        output, hn = self.cell(action, repr)
+
+        next_state = hn[0]
+        next_reward = self.reward_predictor(next_state)
+
+        return next_state, next_reward
+
 
 class TransitionModel(nn.Module):
     def __init__(self,
@@ -988,6 +1085,9 @@ class TransitionModel(nn.Module):
         self.train()
 
     def forward(self, x, action):
+        # x = [32, 64, 7, 7]
+        # action = [32]
+
         batch_range = torch.arange(action.shape[0], device=action.device)
         action_onehot = torch.zeros(action.shape[0],
                                     self.num_actions,
@@ -997,12 +1097,15 @@ class TransitionModel(nn.Module):
         action_onehot[batch_range, action, :, :] = 1
         stacked_image = torch.cat([x, action_onehot], 1)
         next_state = self.network(stacked_image)
+
         if self.residual:
             next_state = next_state + x
         next_state = F.relu(next_state)
         if self.renormalize:
             next_state = renormalize(next_state, 1)
         next_reward = self.reward_predictor(next_state)
+
+        # next_state = [32, 64, 7, 7]
         return next_state, next_reward
 
 

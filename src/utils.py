@@ -91,6 +91,9 @@ def set_config(args, game):
     # new new arguments
     config["model"]["pred_hidden_ratio"] = args.pred_hidden_ratio
     config["model"]["encoder_type"] = args.encoder_type
+    config["model"]["transition_type"] = args.transition_type
+    config["model"]["proj_hidden_size"] = args.proj_hidden_size
+    config["model"]["gru_input_size"] = args.gru_input_size
     config["algo"]["pred_decay"] = args.pred_decay
 
     return config

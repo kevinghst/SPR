@@ -137,6 +137,9 @@ if __name__ == "__main__":
 
     # model
     parser.add_argument('--encoder_type', type=str, default='conv2d', choices=["conv2d", "resnet18"])
+    parser.add_argument('--transition_type', type=str, default='conv2d', choices=["conv2d", "gru"])
+    parser.add_argument('--proj_hidden_size', type=int, default=0)
+    parser.add_argument('--gru_input_size', type=int, default=0)
 
     # env related
     parser.add_argument('--repeat_action_probability', type=float, default=0.25)
