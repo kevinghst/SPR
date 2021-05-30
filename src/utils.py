@@ -65,6 +65,7 @@ def set_config(args, game):
     config["model"]["global_spr"] = args.global_spr
     config["model"]["distributional"] = args.distributional
     config["model"]["renormalize"] = args.renormalize
+    config["model"]["renormalize_type"] = args.renormalize_type
     config["model"]["norm_type"] = args.norm_type
     config["model"]["augmentation"] = args.augmentation
     config["model"]["q_l1_type"] = args.q_l1_type

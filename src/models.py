@@ -14,6 +14,7 @@ from kornia.filters import GaussianBlur2d
 import copy
 import wandb
 import pdb
+import math
 
 from src.encoder import resnet18
 
@@ -47,6 +48,7 @@ class SPRCatDqnModel(torch.nn.Module):
             dqn_hidden_size,
             momentum_tau,
             renormalize,
+            renormalize_type,
             q_l1_type,
             dropout,
             final_classifier,
@@ -192,6 +194,7 @@ class SPRCatDqnModel(torch.nn.Module):
                     num_layers = 1,
                     num_actions = self.num_actions,
                     renormalize=renormalize,
+                    renormalize_type=renormalize_type,
                     dropout=dropout
                 )
             else:
@@ -208,6 +211,7 @@ class SPRCatDqnModel(torch.nn.Module):
             self.dynamics_model = nn.Identity()
 
         self.renormalize = renormalize
+        self.renormalize_type = renormalize_type
 
         if self.use_spr:
             self.local_spr = local_spr
@@ -402,7 +406,7 @@ class SPRCatDqnModel(torch.nn.Module):
         with torch.no_grad() if self.momentum_encoder else dummy_context_mgr():
             target_latents = self.target_encoder(target_images.flatten(0, 1))
             if self.renormalize:
-                target_latents = renormalize(target_latents, first_dim=-3)
+                target_latents = renormalize(target_latents, first_dim=-3, renormalize_type=self.renormalize_type)
 
         target_latents = self.target_encoder_proj(target_latents)
 
@@ -479,7 +483,7 @@ class SPRCatDqnModel(torch.nn.Module):
 
         conv_out = self.conv(img.view(T * B, *img_shape))  # Fold if T dimension.
         if self.renormalize:
-            conv_out = renormalize(conv_out, first_dim=-3)
+            conv_out = renormalize(conv_out, first_dim=-3, renormalize_type=self.renormalize_type)
 
         # conv_out.shape = [32, 64, 7, 7]
         return conv_out
@@ -589,7 +593,7 @@ class SPRCatDqnModel(torch.nn.Module):
 
             conv_out = self.conv(img.view(T * B, *img_shape))  # Fold if T dimension.
             if self.renormalize:
-                conv_out = renormalize(conv_out, first_dim=-3)
+                conv_out = renormalize(conv_out, first_dim=-3, renormalize_type=self.renormalize_type)
 
             conv_out = self.conv_proj(conv_out)
 
@@ -1037,13 +1041,14 @@ def from_categorical(distribution, limit=300, logits=True):
     return distribution @ weights
 
 class GRUModel(nn.Module):
-    def __init__(self, input_size, repr_size, proj_size, num_layers, num_actions, renormalize, dropout):
+    def __init__(self, input_size, repr_size, proj_size, num_layers, num_actions, renormalize, renormalize_type, dropout):
         super().__init__()
         self.input_size = input_size
         self.repr_size = repr_size
         self.num_layers = num_layers
         self.num_actions = num_actions
         self.renormalize = renormalize
+        self.renormalize_type = renormalize_type
 
         self.hidden_size = proj_size if proj_size else repr_size
 
@@ -1074,7 +1079,8 @@ class GRUModel(nn.Module):
             batch_first = True,
         )
 
-
+        self.ln = nn.LayerNorm(self.hidden_size)
+        
         self.reward_predictor = nn.Linear(
             repr_size, 3
         )
@@ -1084,6 +1090,7 @@ class GRUModel(nn.Module):
     def forward(self, repr, action):
         if self.proj_in is not None and repr.shape[-1] != self.hidden_size:
             repr = self.proj_in(repr)
+            repr = self.ln(repr)
 
         action = self.embed(action)
 
@@ -1092,6 +1099,7 @@ class GRUModel(nn.Module):
         output, hn = self.cell(action, repr)
 
         next_state = hn[0]
+        next_state = self.ln(next_state)
 
         if self.proj_out is not None:
             next_repr = self.proj_out(next_state)
@@ -1099,7 +1107,7 @@ class GRUModel(nn.Module):
             next_repr = next_state
 
         if self.renormalize:
-            next_repr = renormalize(next_repr, flat=True)
+            next_repr = renormalize(next_repr, flat=True, renormalize_type=self.renormalize_type)
 
         next_reward = self.reward_predictor(next_repr)
 
@@ -1191,7 +1199,7 @@ class RewardPredictor(nn.Module):
         return self.network(x)
 
 
-def renormalize(tensor, first_dim=1, flat=False):
+def renormalize(tensor, first_dim=1, flat=False, renormalize_type='minmax'):
     if flat:
         flat_tensor = tensor
     else:
@@ -1199,9 +1207,14 @@ def renormalize(tensor, first_dim=1, flat=False):
             first_dim = len(tensor.shape) + first_dim
         flat_tensor = tensor.view(*tensor.shape[:first_dim], -1)
 
-    max = torch.max(flat_tensor, first_dim, keepdim=True).values
-    min = torch.min(flat_tensor, first_dim, keepdim=True).values
-    flat_tensor = (flat_tensor - min)/(max - min)
+    if renormalize_type == 'minmax':
+        max = torch.max(flat_tensor, first_dim, keepdim=True).values
+        min = torch.min(flat_tensor, first_dim, keepdim=True).values
+        flat_tensor = (flat_tensor - min)/(max - min)
+    elif renormalize_type == 'ln':
+        mean = torch.mean(flat_tensor, first_dim, keepdim=True)
+        std = torch.std(flat_tensor, first_dim, keepdim=True)
+        flat_tensor = (flat_tensor - mean) / (std * math.sqrt(flat_tensor.shape[-1] / 78)) #hacky
 
     if flat:
         return flat_tensor
