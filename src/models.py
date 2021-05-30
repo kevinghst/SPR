@@ -56,8 +56,10 @@ class SPRCatDqnModel(torch.nn.Module):
             pred_hidden_ratio,
             encoder_type,
             transition_type,
+            conv_proj_channel,
             proj_hidden_size,
             gru_input_size,
+            gru_proj_size,
             use_maxpool=False,
             channels=None,  # None uses default.
             kernel_sizes=None,
@@ -68,7 +70,6 @@ class SPRCatDqnModel(torch.nn.Module):
         """Instantiates the neural network according to arguments; network defaults
         stored within this method."""
         super().__init__()
-
         self.noisy = noisy_nets
         self.time_offset = time_offset
         self.aug_prob = aug_prob
@@ -127,6 +128,7 @@ class SPRCatDqnModel(torch.nn.Module):
                 paddings=[0, 0, 0],
                 use_maxpool=False,
                 dropout=dropout,
+                conv_proj_channel=conv_proj_channel,
             )
         elif encoder_type == 'resnet18':
             self.conv = resnet18()
@@ -145,7 +147,9 @@ class SPRCatDqnModel(torch.nn.Module):
             self.conv_proj = nn.Sequential(
                 nn.Flatten(1, -1),
                 nn.Linear(self.hidden_size * self.pixels, proj_hidden_size),
+                nn.LayerNorm(proj_hidden_size),
                 nn.ReLU(),
+                nn.Dropout(dropout),
             )
         else:
             self.conv_proj = nn.Identity()
@@ -178,11 +182,17 @@ class SPRCatDqnModel(torch.nn.Module):
 
         if self.jumps > 0:
             if transition_type == 'gru':
+
+                repr_size = proj_hidden_size if proj_hidden_size else (self.pixels * self.hidden_size)
+
                 self.dynamics_model = GRUModel(
                     input_size = gru_input_size,
-                    hidden_size = proj_hidden_size,
+                    repr_size = repr_size,
+                    proj_size = gru_proj_size,
                     num_layers = 1,
                     num_actions = self.num_actions,
+                    renormalize=renormalize,
+                    dropout=dropout
                 )
             else:
                 self.dynamics_model = TransitionModel(channels=self.hidden_size,
@@ -392,7 +402,7 @@ class SPRCatDqnModel(torch.nn.Module):
         with torch.no_grad() if self.momentum_encoder else dummy_context_mgr():
             target_latents = self.target_encoder(target_images.flatten(0, 1))
             if self.renormalize:
-                target_latents = renormalize(target_latents, -3)
+                target_latents = renormalize(target_latents, first_dim=-3)
 
         target_latents = self.target_encoder_proj(target_latents)
 
@@ -469,7 +479,7 @@ class SPRCatDqnModel(torch.nn.Module):
 
         conv_out = self.conv(img.view(T * B, *img_shape))  # Fold if T dimension.
         if self.renormalize:
-            conv_out = renormalize(conv_out, -3)
+            conv_out = renormalize(conv_out, first_dim=-3)
 
         # conv_out.shape = [32, 64, 7, 7]
         return conv_out
@@ -530,6 +540,8 @@ class SPRCatDqnModel(torch.nn.Module):
                                                  prev_reward[0],
                                                  logits=True)) # [32, 4, 51]
 
+            if self.transition_type == 'gru':
+                latent = latent.flatten(1, -1)
             pred_latents.append(latent) #[32, 64, 7, 7] vs [32, 600]
 
             if self.jumps > 0:
@@ -538,9 +550,15 @@ class SPRCatDqnModel(torch.nn.Module):
 
                 for j in range(1, self.jumps + 1):
                     latent, pred_rew = self.step(latent, prev_action[j])
+
                     pred_rew = pred_rew[:observation.shape[1]]
-                    pred_latents.append(latent)
                     pred_reward.append(F.log_softmax(pred_rew, -1))
+
+                    if isinstance(latent, tuple):
+                        state, latent = latent
+                        pred_latents.append(state)
+                    else:
+                        pred_latents.append(latent)
 
             if self.model_rl > 0:
                 for i in range(1, len(pred_latents)):
@@ -571,7 +589,7 @@ class SPRCatDqnModel(torch.nn.Module):
 
             conv_out = self.conv(img.view(T * B, *img_shape))  # Fold if T dimension.
             if self.renormalize:
-                conv_out = renormalize(conv_out, -3)
+                conv_out = renormalize(conv_out, first_dim=-3)
 
             conv_out = self.conv_proj(conv_out)
 
@@ -599,7 +617,10 @@ class SPRCatDqnModel(torch.nn.Module):
         return value
 
     def step(self, state, action):
+        if self.transition_type == 'gru':
+            state = state.flatten(1, -1)
         next_state, reward_logits = self.dynamics_model(state, action)
+
         return next_state, reward_logits
 
 
@@ -699,7 +720,6 @@ class DQNDistributionalDuelingHeadModel(torch.nn.Module):
         input_size = proj_hidden_size if proj_hidden_size else pixels * input_channels
 
         if noisy:
-
 
             self.linears = [NoisyLinear(input_size, hidden_size, std_init=std_init),
                             NoisyLinear(hidden_size, output_size * n_atoms, std_init=std_init),
@@ -897,6 +917,7 @@ class Conv2dModel(torch.nn.Module):
             use_maxpool=False,  # if True: convs use stride 1, maxpool downsample.
             head_sizes=None,  # Put an MLP head on top.
             dropout=0.,
+            conv_proj_channel=0,
             ):
         super().__init__()
         if paddings is None:
@@ -919,7 +940,14 @@ class Conv2dModel(torch.nn.Module):
                 sequence.append(nn.Dropout(dropout))
             if maxp_stride > 1:
                 sequence.append(torch.nn.MaxPool2d(maxp_stride))  # No padding.
+        if conv_proj_channel:
+            sequence.extend([
+                nn.Conv2d(64, conv_proj_channel, kernel_size=1, stride=1, bias=False),
+                nn.ReLU()
+            ])
+
         self.conv = torch.nn.Sequential(*sequence)
+
 
     def forward(self, input):
         """Computes the convolution stack on the input; assumes correct shape
@@ -1009,12 +1037,30 @@ def from_categorical(distribution, limit=300, logits=True):
     return distribution @ weights
 
 class GRUModel(nn.Module):
-    def __init__(self, input_size, hidden_size, num_layers, num_actions):
+    def __init__(self, input_size, repr_size, proj_size, num_layers, num_actions, renormalize, dropout):
         super().__init__()
         self.input_size = input_size
-        self.hidden_size = hidden_size
+        self.repr_size = repr_size
         self.num_layers = num_layers
         self.num_actions = num_actions
+        self.renormalize = renormalize
+
+        self.hidden_size = proj_size if proj_size else repr_size
+
+        if proj_size:
+            self.proj_in = nn.Sequential(
+                nn.Linear(repr_size, proj_size),
+                nn.ReLU(),
+                nn.Dropout(dropout)
+            )
+            self.proj_out = nn.Sequential(
+                nn.Linear(proj_size, repr_size),
+                nn.ReLU()
+            )
+        else:
+            self.proj_in = None
+            self.proj_out = None
+
 
         self.embed = nn.Embedding(
             num_actions,
@@ -1023,18 +1069,22 @@ class GRUModel(nn.Module):
 
         self.cell = nn.GRU(
             input_size = input_size,
-            hidden_size = hidden_size,
+            hidden_size = self.hidden_size,
             num_layers = num_layers,
             batch_first = True,
         )
 
+
         self.reward_predictor = nn.Linear(
-            hidden_size, 3
+            repr_size, 3
         )
 
         self.train()
 
     def forward(self, repr, action):
+        if self.proj_in is not None and repr.shape[-1] != self.hidden_size:
+            repr = self.proj_in(repr)
+
         action = self.embed(action)
 
         action = torch.unsqueeze(action, 1) # [32, 1, 250]
@@ -1042,9 +1092,18 @@ class GRUModel(nn.Module):
         output, hn = self.cell(action, repr)
 
         next_state = hn[0]
-        next_reward = self.reward_predictor(next_state)
 
-        return next_state, next_reward
+        if self.proj_out is not None:
+            next_repr = self.proj_out(next_state)
+        else:
+            next_repr = next_state
+
+        if self.renormalize:
+            next_repr = renormalize(next_repr, flat=True)
+
+        next_reward = self.reward_predictor(next_repr)
+
+        return (next_repr, next_state), next_reward
 
 
 class TransitionModel(nn.Module):
@@ -1102,7 +1161,7 @@ class TransitionModel(nn.Module):
             next_state = next_state + x
         next_state = F.relu(next_state)
         if self.renormalize:
-            next_state = renormalize(next_state, 1)
+            next_state = renormalize(next_state, first_dim=1)
         next_reward = self.reward_predictor(next_state)
 
         # next_state = [32, 64, 7, 7]
@@ -1132,12 +1191,19 @@ class RewardPredictor(nn.Module):
         return self.network(x)
 
 
-def renormalize(tensor, first_dim=1):
-    if first_dim < 0:
-        first_dim = len(tensor.shape) + first_dim
-    flat_tensor = tensor.view(*tensor.shape[:first_dim], -1)
+def renormalize(tensor, first_dim=1, flat=False):
+    if flat:
+        flat_tensor = tensor
+    else:
+        if first_dim < 0:
+            first_dim = len(tensor.shape) + first_dim
+        flat_tensor = tensor.view(*tensor.shape[:first_dim], -1)
+
     max = torch.max(flat_tensor, first_dim, keepdim=True).values
     min = torch.min(flat_tensor, first_dim, keepdim=True).values
     flat_tensor = (flat_tensor - min)/(max - min)
 
-    return flat_tensor.view(*tensor.shape)
+    if flat:
+        return flat_tensor
+    else:
+        return flat_tensor.view(*tensor.shape)

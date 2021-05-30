@@ -5,7 +5,7 @@
 #SBATCH --job-name="SPR"
 #SBATCH --mem=64G
 #SBATCH -c 4
-#SBATCH --time=23:00:00
+#SBATCH --time=40:00:00
 #SBATCH --output=/scratch/wz1232/og_spr/logs/%j.out
 #SBATCH --open-mode=append
 #SBATCH --export=ALL
