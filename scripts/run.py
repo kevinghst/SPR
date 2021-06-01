@@ -90,7 +90,7 @@ if __name__ == "__main__":
     parser.add_argument('--jumps', type=int, default=5)
     parser.add_argument('--num-logs', type=int, default=10)
     parser.add_argument('--renormalize', type=int, default=1)
-    parser.add_argument('--renormalize_type', type=str, default='minmax', choices=['minmax', 'ln'])
+    parser.add_argument('--renormalize_type', type=str, default='minmax', choices=['minmax', 'ln', 'train_ln'])
     parser.add_argument('--dueling', type=int, default=1)
     parser.add_argument('--replay-ratio', type=int, default=64)
     parser.add_argument('--dynamics-blocks', type=int, default=0)

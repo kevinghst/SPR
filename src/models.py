@@ -183,10 +183,9 @@ class SPRCatDqnModel(torch.nn.Module):
                                                    std_init=noisy_nets_std)
 
         if self.jumps > 0:
+            repr_size = proj_hidden_size if proj_hidden_size else (self.pixels * self.hidden_size)
+
             if transition_type == 'gru':
-
-                repr_size = proj_hidden_size if proj_hidden_size else (self.pixels * self.hidden_size)
-
                 self.dynamics_model = GRUModel(
                     input_size = gru_input_size,
                     repr_size = repr_size,
@@ -212,6 +211,11 @@ class SPRCatDqnModel(torch.nn.Module):
 
         self.renormalize = renormalize
         self.renormalize_type = renormalize_type
+
+        if renormalize_type == 'train_ln':
+            self.renormalize_ln = nn.LayerNorm(repr_size)
+        else:
+            self.renormalize_ln = nn.Identity()
 
         if self.use_spr:
             self.local_spr = local_spr
@@ -302,10 +306,12 @@ class SPRCatDqnModel(torch.nn.Module):
             if self.momentum_encoder:
                 self.target_encoder = copy.deepcopy(self.conv)
                 self.target_encoder_proj = copy.deepcopy(self.conv_proj)
+                self.target_renormalize_ln = copy.deepcopy(self.renormalize_ln)
                 self.global_target_classifier = copy.deepcopy(self.global_target_classifier)
                 self.local_target_classifier = copy.deepcopy(self.local_target_classifier)
                 for param in (list(self.target_encoder.parameters())
                             + list(self.target_encoder_proj.parameters())
+                            + list(self.target_renormalize_ln.parameters())
                             + list(self.global_target_classifier.parameters())
                             + list(self.local_target_classifier.parameters())):
                     param.requires_grad = False
@@ -406,7 +412,7 @@ class SPRCatDqnModel(torch.nn.Module):
         with torch.no_grad() if self.momentum_encoder else dummy_context_mgr():
             target_latents = self.target_encoder(target_images.flatten(0, 1))
             if self.renormalize:
-                target_latents = renormalize(target_latents, first_dim=-3, renormalize_type=self.renormalize_type)
+                target_latents = self.renormalize_tensor(target_latents, first_dim=-3, target=True)
 
         target_latents = self.target_encoder_proj(target_latents)
 
@@ -426,6 +432,12 @@ class SPRCatDqnModel(torch.nn.Module):
             update_state_dict(self.target_encoder,
                               self.conv.state_dict(),
                               self.momentum_tau)
+
+            update_state_dict(
+                self.target_renormalize_ln,
+                self.renormalize_ln.state_dict(),
+                1.0 # we don't use momentum for ln
+            )
 
             update_state_dict(
                 self.target_encoder_proj,
@@ -483,7 +495,7 @@ class SPRCatDqnModel(torch.nn.Module):
 
         conv_out = self.conv(img.view(T * B, *img_shape))  # Fold if T dimension.
         if self.renormalize:
-            conv_out = renormalize(conv_out, first_dim=-3, renormalize_type=self.renormalize_type)
+            conv_out = self.renormalize_tensor(conv_out, first_dim=-3)
 
         # conv_out.shape = [32, 64, 7, 7]
         return conv_out
@@ -593,7 +605,7 @@ class SPRCatDqnModel(torch.nn.Module):
 
             conv_out = self.conv(img.view(T * B, *img_shape))  # Fold if T dimension.
             if self.renormalize:
-                conv_out = renormalize(conv_out, first_dim=-3, renormalize_type=self.renormalize_type)
+                conv_out = self.renormalize_tensor(conv_out, first_dim=-3)
 
             conv_out = self.conv_proj(conv_out)
 
@@ -623,9 +635,49 @@ class SPRCatDqnModel(torch.nn.Module):
     def step(self, state, action):
         if self.transition_type == 'gru':
             state = state.flatten(1, -1)
-        next_state, reward_logits = self.dynamics_model(state, action)
+
+        next_state = self.dynamics_model(state, action)
+        if self.renormalize:
+            if isinstance(next_state, tuple):
+                next_repr = self.renormalize_tensor(next_state[0], flat=True)
+                next_state = (next_repr, next_state[1])
+            else:
+                next_state = self.renormalize_tensor(next_state, first_dim=1)
+
+        if isinstance(next_state, tuple):
+            reward_logits = self.dynamics_model.reward_predictor(next_state[0])
+        else:
+            reward_logits = self.dynamics_model.reward_predictor(next_state)
 
         return next_state, reward_logits
+
+    def renormalize_tensor(self, tensor, first_dim=1, flat=False, target=False):
+        if flat:
+            flat_tensor = tensor
+        else:
+            if first_dim < 0:
+                first_dim = len(tensor.shape) + first_dim
+            flat_tensor = tensor.view(*tensor.shape[:first_dim], -1)
+
+        if self.renormalize_type == 'minmax':
+            max = torch.max(flat_tensor, first_dim, keepdim=True).values
+            min = torch.min(flat_tensor, first_dim, keepdim=True).values
+            flat_tensor = (flat_tensor - min)/(max - min)
+        elif self.renormalize_type == 'ln':
+            mean = torch.mean(flat_tensor, first_dim, keepdim=True)
+            std = torch.std(flat_tensor, first_dim, keepdim=True)
+            flat_tensor = (flat_tensor - mean) / (std * math.sqrt(flat_tensor.shape[-1] / 78)) #hacky
+        elif self.renormalize_type == 'train_ln':
+            if target:
+                flat_tensor = self.target_renormalize_ln(flat_tensor)
+            else:
+                flat_tensor = self.renormalize_ln(flat_tensor)
+
+        if flat:
+            return flat_tensor
+        else:
+            return flat_tensor.view(*tensor.shape)
+
 
 
 class MLPHead(torch.nn.Module):
@@ -1106,12 +1158,7 @@ class GRUModel(nn.Module):
         else:
             next_repr = next_state
 
-        if self.renormalize:
-            next_repr = renormalize(next_repr, flat=True, renormalize_type=self.renormalize_type)
-
-        next_reward = self.reward_predictor(next_repr)
-
-        return (next_repr, next_state), next_reward
+        return (next_repr, next_state)
 
 
 class TransitionModel(nn.Module):
@@ -1168,12 +1215,8 @@ class TransitionModel(nn.Module):
         if self.residual:
             next_state = next_state + x
         next_state = F.relu(next_state)
-        if self.renormalize:
-            next_state = renormalize(next_state, first_dim=1)
-        next_reward = self.reward_predictor(next_state)
 
-        # next_state = [32, 64, 7, 7]
-        return next_state, next_reward
+        return next_state
 
 
 class RewardPredictor(nn.Module):
@@ -1197,26 +1240,3 @@ class RewardPredictor(nn.Module):
 
     def forward(self, x):
         return self.network(x)
-
-
-def renormalize(tensor, first_dim=1, flat=False, renormalize_type='minmax'):
-    if flat:
-        flat_tensor = tensor
-    else:
-        if first_dim < 0:
-            first_dim = len(tensor.shape) + first_dim
-        flat_tensor = tensor.view(*tensor.shape[:first_dim], -1)
-
-    if renormalize_type == 'minmax':
-        max = torch.max(flat_tensor, first_dim, keepdim=True).values
-        min = torch.min(flat_tensor, first_dim, keepdim=True).values
-        flat_tensor = (flat_tensor - min)/(max - min)
-    elif renormalize_type == 'ln':
-        mean = torch.mean(flat_tensor, first_dim, keepdim=True)
-        std = torch.std(flat_tensor, first_dim, keepdim=True)
-        flat_tensor = (flat_tensor - mean) / (std * math.sqrt(flat_tensor.shape[-1] / 78)) #hacky
-
-    if flat:
-        return flat_tensor
-    else:
-        return flat_tensor.view(*tensor.shape)
