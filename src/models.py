@@ -62,6 +62,7 @@ class SPRCatDqnModel(torch.nn.Module):
             proj_hidden_size,
             gru_input_size,
             gru_proj_size,
+            ln_ratio,
             use_maxpool=False,
             channels=None,  # None uses default.
             kernel_sizes=None,
@@ -211,6 +212,7 @@ class SPRCatDqnModel(torch.nn.Module):
 
         self.renormalize = renormalize
         self.renormalize_type = renormalize_type
+        self.ln_ratio = ln_ratio
 
         if renormalize_type == 'train_ln':
             self.renormalize_ln = nn.LayerNorm(repr_size)
@@ -666,7 +668,7 @@ class SPRCatDqnModel(torch.nn.Module):
         elif self.renormalize_type == 'ln':
             mean = torch.mean(flat_tensor, first_dim, keepdim=True)
             std = torch.std(flat_tensor, first_dim, keepdim=True)
-            flat_tensor = (flat_tensor - mean) / (std * math.sqrt(flat_tensor.shape[-1] / 78)) #hacky
+            flat_tensor = (flat_tensor - mean) / (std * math.sqrt(flat_tensor.shape[-1] / self.ln_ratio)) #hacky
         elif self.renormalize_type == 'train_ln':
             if target:
                 flat_tensor = self.target_renormalize_ln(flat_tensor)

@@ -143,6 +143,7 @@ if __name__ == "__main__":
     parser.add_argument('--gru_input_size', type=int, default=0)
     parser.add_argument('--gru_proj_size', type=int, default=0)
     parser.add_argument('--conv_proj_channel', type=int, default=0)
+    parser.add_argument('--ln_ratio', type=int, default=1)
 
     # env related
     parser.add_argument('--repeat_action_probability', type=float, default=0.25)

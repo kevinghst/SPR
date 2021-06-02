@@ -97,6 +97,7 @@ def set_config(args, game):
     config["model"]["conv_proj_channel"] = args.conv_proj_channel
     config["model"]["gru_input_size"] = args.gru_input_size
     config["model"]["gru_proj_size"] = args.gru_proj_size
+    config["model"]["ln_ratio"] = args.ln_ratio
     config["algo"]["pred_decay"] = args.pred_decay
 
     return config
