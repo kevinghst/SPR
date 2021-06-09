@@ -139,7 +139,7 @@ class SPRCategoricalDQN(CategoricalDQN):
             total_loss = loss + self.model_rl_weight*model_rl_loss \
                               + self.reward_loss_weight*reward_loss
             total_loss = total_loss + spr_loss
-            self.optimizer.zero_grad()
+            self.optimizer.zero_grad(set_to_none=True)
             total_loss.backward()
             grad_norm = torch.nn.utils.clip_grad_norm_(
                 self.model.stem_parameters(), self.clip_grad_norm)
