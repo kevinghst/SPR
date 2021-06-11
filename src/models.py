@@ -64,6 +64,7 @@ class SPRCatDqnModel(torch.nn.Module):
             gru_proj_size,
             gru_dropout,
             ln_ratio,
+            aug_control,
             use_maxpool=False,
             channels=None,  # None uses default.
             kernel_sizes=None,
@@ -85,8 +86,10 @@ class SPRCatDqnModel(torch.nn.Module):
 
         self.transforms = []
         self.eval_transforms = []
+        self.batch_transforms = []
 
         self.uses_augmentation = False
+
         for aug in augmentation:
             if aug == "affine":
                 transformation = RandomAffine(5, (.14, .14), (.9, 1.1), (-5, 5))
@@ -109,15 +112,20 @@ class SPRCatDqnModel(torch.nn.Module):
             elif aug == "shift":
                 transformation = nn.Sequential(nn.ReplicationPad2d(4), RandomCrop((84, 84)))
                 eval_transformation = nn.Identity()
+                batch_transformation = nn.Sequential(
+                    nn.ReplicationPad2d(4), RandomCrop((84, 84), same_on_batch=True)
+                )
             elif aug == "intensity":
                 transformation = Intensity(scale=0.05)
                 eval_transformation = nn.Identity()
+                batch_transformation = Intensity(scale=0.05, same_on_batch=True)
             elif aug == "none":
                 transformation = eval_transformation = nn.Identity()
             else:
                 raise NotImplementedError()
             self.transforms.append(transformation)
             self.eval_transforms.append(eval_transformation)
+            self.batch_transforms.append(batch_transformation)
 
         self.dueling = dueling
         f, c = image_shape[:2]
@@ -165,6 +173,7 @@ class SPRCatDqnModel(torch.nn.Module):
         self.eval_augmentation = eval_augmentation
         self.num_actions = output_size
         self.transition_type = transition_type
+        self.aug_control = aug_control
 
         if dueling:
             self.head = DQNDistributionalDuelingHeadModel(self.hidden_size,
@@ -471,11 +480,13 @@ class SPRCatDqnModel(torch.nn.Module):
         return image
 
     @torch.no_grad()
-    def transform(self, images, augment=False):
+    def transform(self, images, augment=False, batch_same=False):
         images = images.float()/255. if images.dtype == torch.uint8 else images
         flat_images = images.reshape(-1, *images.shape[-3:])
         if augment:
-            processed_images = self.apply_transforms(self.transforms,
+            transforms = self.batch_transforms if batch_same else self.transforms
+
+            processed_images = self.apply_transforms(transforms,
                                                      self.eval_transforms,
                                                      flat_images)
         else:
@@ -546,9 +557,19 @@ class SPRCatDqnModel(torch.nn.Module):
             log_pred_ps = []
             pred_reward = []
             pred_latents = []
-            input_obs = observation[0].flatten(1, 2)
-            input_obs = self.transform(input_obs, augment=True) # [32, 4, 84, 84]
-            latent = self.stem_forward(input_obs,
+            # input_obs = observation[0].flatten(1, 2)
+            # input_obs = self.transform(input_obs, augment=True) # [32, 4, 84, 84]
+
+            input_obs = observation[self.time_offset:self.jumps + self.time_offset+1].transpose(0, 1).flatten(2, 3)
+
+            # we will apply batch transformation to each batch
+            aug_obs = []
+            for i in range(input_obs.shape[0]):
+                aug_obs.append(self.transform(input_obs[i], augment=True, batch_same=True))
+
+            input_obs = torch.stack(aug_obs, 0) # [32, 6, 4, 84, 84]
+
+            latent = self.stem_forward(input_obs[:,0,:,:,:],
                                        prev_action[0],
                                        prev_reward[0]) # [32, 64, 7, 7]
 
@@ -564,20 +585,34 @@ class SPRCatDqnModel(torch.nn.Module):
             pred_latents.append(latent) #[32, 64, 7, 7] vs [32, 600]
 
             if self.jumps > 0:
-                pred_rew = self.dynamics_model.reward_predictor(pred_latents[0]) #[32, 3]
+                pred_rew = self.dynamics_model.reward_predictor(pred_latents[0])  # [32, 3]
                 pred_reward.append(F.log_softmax(pred_rew, -1))
 
-                for j in range(1, self.jumps + 1):
-                    latent, pred_rew = self.step(latent, prev_action[j])
+                if self.aug_control:
+                    for j in range(1, self.jumps + 1):
+                        pred_rew = torch.zeros_like(pred_reward[-1]).to(pred_reward[-1].device)
+                        pred_reward.append(pred_rew)
 
-                    pred_rew = pred_rew[:observation.shape[1]]
-                    pred_reward.append(F.log_softmax(pred_rew, -1))
+                        latent = self.stem_forward(input_obs[:,j,:,:,:], prev_action[j], prev_reward[j])
 
-                    if isinstance(latent, tuple):
-                        state, latent = latent
-                        pred_latents.append(state)
-                    else:
+                        latent = self.conv_proj(latent)
+
+                        if self.transition_type == 'gru':
+                            latent = latent.flatten(1, -1)
                         pred_latents.append(latent)
+
+                else:
+                    for j in range(1, self.jumps + 1):
+                        latent, pred_rew = self.step(latent, prev_action[j])
+
+                        pred_rew = pred_rew[:observation.shape[1]]
+                        pred_reward.append(F.log_softmax(pred_rew, -1))
+
+                        if isinstance(latent, tuple):
+                            state, latent = latent
+                            pred_latents.append(state)
+                        else:
+                            pred_latents.append(latent)
 
             if self.model_rl > 0:
                 for i in range(1, len(pred_latents)):
@@ -949,14 +984,24 @@ def maybe_transform(image, transform, alt_transform, p=0.8):
 
 
 class Intensity(nn.Module):
-    def __init__(self, scale):
+    def __init__(self, scale, same_on_batch=False):
         super().__init__()
         self.scale = scale
+        self.same_on_batch = same_on_batch
 
     def forward(self, x):
         r = torch.randn((x.size(0), 1, 1, 1), device=x.device)
         noise = 1.0 + (self.scale * r.clamp(-2.0, 2.0))
-        return x * noise
+
+        # x.shape     = [192, 4, 84, 84]
+        # noise.shape = [192, 1, 1, 1]
+
+        if self.same_on_batch:
+            out = x * noise[0][0][0]
+        else:
+            out = x * noise
+
+        return out
 
 
 class Conv2dModel(torch.nn.Module):

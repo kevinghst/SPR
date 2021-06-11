@@ -99,6 +99,7 @@ def set_config(args, game):
     config["model"]["gru_proj_size"] = args.gru_proj_size
     config["model"]["ln_ratio"] = args.ln_ratio
     config["model"]["gru_dropout"] = args.gru_dropout
+    config["model"]["aug_control"] = args.aug_control
     config["algo"]["pred_decay"] = args.pred_decay
 
     return config
