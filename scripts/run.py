@@ -142,6 +142,7 @@ if __name__ == "__main__":
     parser.add_argument('--proj_hidden_size', type=int, default=0)
     parser.add_argument('--gru_input_size', type=int, default=0)
     parser.add_argument('--gru_proj_size', type=int, default=0)
+    parser.add_argument('--gru_dropout', type=float, default=0.5)
     parser.add_argument('--conv_proj_channel', type=int, default=0)
     parser.add_argument('--ln_ratio', type=int, default=1)
 

@@ -62,6 +62,7 @@ class SPRCatDqnModel(torch.nn.Module):
             proj_hidden_size,
             gru_input_size,
             gru_proj_size,
+            gru_dropout,
             ln_ratio,
             use_maxpool=False,
             channels=None,  # None uses default.
@@ -195,7 +196,7 @@ class SPRCatDqnModel(torch.nn.Module):
                     num_actions = self.num_actions,
                     renormalize=renormalize,
                     renormalize_type=renormalize_type,
-                    dropout=dropout
+                    dropout=gru_dropout
                 )
             else:
                 self.dynamics_model = TransitionModel(channels=self.hidden_size,
@@ -1105,7 +1106,7 @@ class GRUModel(nn.Module):
         self.renormalize_type = renormalize_type
 
         self.hidden_size = proj_size if proj_size else repr_size
-
+        
         if proj_size:
             self.proj_in = nn.Sequential(
                 nn.Linear(repr_size, proj_size),
