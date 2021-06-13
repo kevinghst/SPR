@@ -92,7 +92,7 @@ class SPRCatDqnModel(torch.nn.Module):
         self.batch_transforms = []
 
         self.uses_augmentation = False
-
+        
         for aug in augmentation:
             if aug == "affine":
                 transformation = RandomAffine(5, (.14, .14), (.9, 1.1), (-5, 5))
@@ -123,7 +123,7 @@ class SPRCatDqnModel(torch.nn.Module):
                 eval_transformation = nn.Identity()
                 batch_transformation = Intensity(scale=0.05, same_on_batch=True)
             elif aug == "none":
-                transformation = eval_transformation = nn.Identity()
+                transformation = eval_transformation = batch_transformation= nn.Identity()
             else:
                 raise NotImplementedError()
             self.transforms.append(transformation)
@@ -196,6 +196,12 @@ class SPRCatDqnModel(torch.nn.Module):
                                                    n_atoms=n_atoms,
                                                    std_init=noisy_nets_std)
 
+        # latent
+        self.latent_dists = latent_dists
+        self.latent_dist_size = latent_dist_size
+        self.use_latent = True if latent_dists and latent_dist_size else False
+
+
         if self.jumps > 0:
             repr_size = proj_hidden_size if proj_hidden_size else (self.pixels * self.hidden_size)
 
@@ -210,6 +216,23 @@ class SPRCatDqnModel(torch.nn.Module):
                     renormalize_type=renormalize_type,
                     dropout=gru_dropout
                 )
+
+                if self.use_latent:
+                    self.posterior_net = nn.Sequential(
+                        nn.Linear(repr_size + gru_proj_size, latent_proj_size),
+                        nn.ReLU(),
+                        nn.Linear(latent_proj_size, latent_dists * latent_dist_size)
+                    )
+                    self.latent_merger = nn.Sequential(
+                        nn.Linear(latent_dists * latent_dist_size + gru_proj_size, repr_size),
+                        nn.ReLU()
+                    )
+                else:
+                    self.latent_merger = nn.Sequential(
+                        nn.Linear(gru_proj_size, repr_size),
+                        nn.ReLU()
+                    )
+
             else:
                 self.dynamics_model = TransitionModel(channels=self.hidden_size,
                                                       num_actions=output_size,
@@ -231,27 +254,6 @@ class SPRCatDqnModel(torch.nn.Module):
             self.renormalize_ln = nn.LayerNorm(repr_size)
         else:
             self.renormalize_ln = nn.Identity()
-
-        # latent
-        self.latent_dists = latent_dists
-        self.latent_dist_size = latent_dist_size
-        self.use_latent = True if latent_dists and latent_dist_size else False
-
-        if self.use_latent:
-            self.posterior_net = nn.Sequential(
-                nn.Linear(repr_size + gru_proj_size, latent_proj_size),
-                nn.ReLU(),
-                nn.Linear(latent_dists * latent_dist_size)
-            )
-            self.latent_merger = nn.Sequential(
-                nn.Linear(latent_dists * latent_dist_size + gru_proj_size, repr_size),
-                nn.ReLU()
-            )
-        else:
-            self.latent_merger = nn.Sequential(
-                nn.Linear(gru_proj_size, repr_size),
-                nn.ReLU()
-            )
 
         if self.use_spr:
             self.local_spr = local_spr
@@ -573,16 +575,17 @@ class SPRCatDqnModel(torch.nn.Module):
 
         if train:
             # observation.shape = [16, 32, 4, 1, 84, 84] <-- when jumps == 5
+            # observation.shape = [21, 32, 4, 1, 84, 84] <-- when jumps == 10
+
             # prev_action.shape = [16, 32]
             # prev_reward.shape = [16, 32]
-
-            # observation.shape = [21, 32, 4, 1, 84, 84] <-- when jumps == 10
 
             log_pred_ps = []
             pred_reward = []
             pred_latents = []
 
-            if self.aug_control:
+
+            if self.aug_control or self.use_latent:
                 input_obs = observation[self.time_offset:self.jumps + self.time_offset+1].transpose(0, 1).flatten(2, 3)
                 # input_obs.shape = ([32, 6, 4, 84, 84])
 
@@ -602,8 +605,6 @@ class SPRCatDqnModel(torch.nn.Module):
             latent = self.stem_forward(first_input_obs,
                                        prev_action[0],
                                        prev_reward[0]) # [32, 64, 7, 7]
-
-            latent = self.conv_proj(latent)
 
             log_pred_ps.append(self.head_forward(latent,
                                                  prev_action[0],
@@ -625,8 +626,6 @@ class SPRCatDqnModel(torch.nn.Module):
 
                         latent = self.stem_forward(input_obs[:,j,:,:,:], prev_action[j], prev_reward[j])
 
-                        latent = self.conv_proj(latent)
-
                         if self.transition_type == 'gru':
                             latent = latent.flatten(1, -1)
 
@@ -634,7 +633,14 @@ class SPRCatDqnModel(torch.nn.Module):
 
                 else:
                     for j in range(1, self.jumps + 1):
-                        latent, pred_rew = self.step(latent, prev_action[j], None) # latent.shape = [32, 64, 7, 7]
+                        if self.use_latent:
+                            embed = self.stem_forward(input_obs[:,j,:,:,:], prev_action[j], prev_reward[j])
+                            if self.transition_type == 'gru':
+                                embed = embed.flatten(1, -1)
+                        else:
+                            embed = None
+
+                        latent, pred_rew = self.step(latent, prev_action[j], embed) # latent.shape = [32, 64, 7, 7]
 
                         pred_rew = pred_rew[:observation.shape[1]]
                         pred_reward.append(F.log_softmax(pred_rew, -1))
@@ -676,8 +682,6 @@ class SPRCatDqnModel(torch.nn.Module):
             if self.renormalize:
                 conv_out = self.renormalize_tensor(conv_out, first_dim=-3)
 
-            conv_out = self.conv_proj(conv_out)
-
             p = self.head(conv_out)
 
             if self.distributional:
@@ -706,13 +710,12 @@ class SPRCatDqnModel(torch.nn.Module):
 
         if self.transition_type == 'gru':
             if self.use_latent:
-                next_logits = self.posterior_net(torch.cat((next_embed, next_state), dim=1))
-                next_stoch = sample_discrete(next_logits)
+                next_logits = self.posterior_net(torch.cat((next_embed, next_state), dim=1)) # [bs, 3136 + 600]
+                next_stoch = self.sample_discrete(next_logits)
                 next_repr = self.latent_merger(torch.cat((next_state, next_stoch), dim=1))
             else:
                 next_repr = self.latent_merger(next_state)
-
-            next_repr = self.renormalize_tensor(next_repr, flat=True)
+            next_repr = self.renormalize_tensor(next_repr)
             next_state = (next_repr, next_state)
         else:
             next_state = self.renormalize_tensor(next_state, first_dim=1)
@@ -732,10 +735,27 @@ class SPRCatDqnModel(torch.nn.Module):
         return next_state, reward_logits
 
     def sample_discrete(self, logits):
-        raise NotImplementedError
+        # logits.shape = [bs, 1024]
 
-    def renormalize_tensor(self, tensor, first_dim=1, flat=False, target=False):
-        if flat:
+        # straight through gradient
+        bs = logits.shape[0]
+        logits = torch.reshape(logits, (bs, self.latent_dists, self.latent_dist_size))
+        sm = nn.Softmax(dim=2)
+        probs = sm(logits)
+
+        m = torch.distributions.one_hot_categorical.OneHotCategorical(probs=probs)
+        samples = m.sample()
+
+        samples = samples + probs - probs.detach()
+
+        samples = torch.reshape(samples, (bs, self.latent_dists * self.latent_dist_size))
+
+        return samples
+
+    def renormalize_tensor(self, tensor, first_dim=1, target=False):
+        flat = len(tensor.shape) < 4
+
+        if flat: # flat
             flat_tensor = tensor
         else:
             if first_dim < 0:
