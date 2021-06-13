@@ -561,11 +561,13 @@ class SPRCatDqnModel(torch.nn.Module):
             # input_obs = self.transform(input_obs, augment=True) # [32, 4, 84, 84]
 
             input_obs = observation[self.time_offset:self.jumps + self.time_offset+1].transpose(0, 1).flatten(2, 3)
+            # input_obs.shape = ([32, 6, 4, 84, 84])
 
             # we will apply batch transformation to each batch
             aug_obs = []
             for i in range(input_obs.shape[0]):
                 aug_obs.append(self.transform(input_obs[i], augment=True, batch_same=True))
+                # [6, 4, 84, 84]
 
             input_obs = torch.stack(aug_obs, 0) # [32, 6, 4, 84, 84]
 
@@ -599,11 +601,12 @@ class SPRCatDqnModel(torch.nn.Module):
 
                         if self.transition_type == 'gru':
                             latent = latent.flatten(1, -1)
-                        pred_latents.append(latent)
+
+                        pred_latents.append(latent) # latent.shape = [32, 64, 7, 7]
 
                 else:
                     for j in range(1, self.jumps + 1):
-                        latent, pred_rew = self.step(latent, prev_action[j])
+                        latent, pred_rew = self.step(latent, prev_action[j]) # latent.shape = [32, 64, 7, 7]
 
                         pred_rew = pred_rew[:observation.shape[1]]
                         pred_reward.append(F.log_softmax(pred_rew, -1))
@@ -1155,12 +1158,12 @@ class GRUModel(nn.Module):
         if proj_size:
             self.proj_in = nn.Sequential(
                 nn.Linear(repr_size, proj_size),
-                nn.ReLU(),
+                nn.ELU(),
                 nn.Dropout(dropout)
             )
             self.proj_out = nn.Sequential(
                 nn.Linear(proj_size, repr_size),
-                nn.ReLU()
+                nn.ELU()
             )
         else:
             self.proj_in = None
