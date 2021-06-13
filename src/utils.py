@@ -100,6 +100,10 @@ def set_config(args, game):
     config["model"]["ln_ratio"] = args.ln_ratio
     config["model"]["gru_dropout"] = args.gru_dropout
     config["model"]["aug_control"] = args.aug_control
+    config["model"]["latent_dists"] = args.latent_dists
+    config["model"]["latent_dist_size"] = args.latent_dist_size
+    config["model"]["latent_proj_size"] = args.latent_proj_size
+
     config["algo"]["pred_decay"] = args.pred_decay
 
     return config

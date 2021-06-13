@@ -65,6 +65,9 @@ class SPRCatDqnModel(torch.nn.Module):
             gru_dropout,
             ln_ratio,
             aug_control,
+            latent_dists,
+            latent_dist_size,
+            latent_proj_size,
             use_maxpool=False,
             channels=None,  # None uses default.
             kernel_sizes=None,
@@ -228,6 +231,21 @@ class SPRCatDqnModel(torch.nn.Module):
             self.renormalize_ln = nn.LayerNorm(repr_size)
         else:
             self.renormalize_ln = nn.Identity()
+
+
+        # latent
+        self.latent_dists = latent_dists
+        self.latent_dist_size = latent_dist_size
+        self.use_latent = True if latent_dists and latent_dist_size else False
+
+        if self.use_latent:
+            self.posterior_net = nn.Sequential(
+                nn.Linear(repr_size + gru_proj_size, latent_proj_size),
+                nn.ELU(),
+                nn.Linear(latent_dists * latent_dist_size)
+            )
+            # self.posterior_embed =
+
 
         if self.use_spr:
             self.local_spr = local_spr
@@ -557,21 +575,25 @@ class SPRCatDqnModel(torch.nn.Module):
             log_pred_ps = []
             pred_reward = []
             pred_latents = []
-            # input_obs = observation[0].flatten(1, 2)
-            # input_obs = self.transform(input_obs, augment=True) # [32, 4, 84, 84]
 
-            input_obs = observation[self.time_offset:self.jumps + self.time_offset+1].transpose(0, 1).flatten(2, 3)
-            # input_obs.shape = ([32, 6, 4, 84, 84])
+            if self.aug_control:
+                input_obs = observation[self.time_offset:self.jumps + self.time_offset+1].transpose(0, 1).flatten(2, 3)
+                # input_obs.shape = ([32, 6, 4, 84, 84])
 
-            # we will apply batch transformation to each batch
-            aug_obs = []
-            for i in range(input_obs.shape[0]):
-                aug_obs.append(self.transform(input_obs[i], augment=True, batch_same=True))
-                # [6, 4, 84, 84]
+                # we will apply batch transformation to each batch
+                aug_obs = []
+                for i in range(input_obs.shape[0]):
+                    aug_obs.append(self.transform(input_obs[i], augment=True, batch_same=True))
+                    # [6, 4, 84, 84]
 
-            input_obs = torch.stack(aug_obs, 0) # [32, 6, 4, 84, 84]
+                input_obs = torch.stack(aug_obs, 0) # [32, 6, 4, 84, 84]
+                first_input_obs = input_obs[:,0,:,:,:]
+            else:
+                input_obs = observation[0].flatten(1, 2)
+                input_obs = self.transform(input_obs, augment=True) # [32, 4, 84, 84]
+                first_input_obs = input_obs
 
-            latent = self.stem_forward(input_obs[:,0,:,:,:],
+            latent = self.stem_forward(first_input_obs,
                                        prev_action[0],
                                        prev_reward[0]) # [32, 64, 7, 7]
 

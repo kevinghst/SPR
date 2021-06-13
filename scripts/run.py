@@ -146,6 +146,9 @@ if __name__ == "__main__":
     parser.add_argument('--conv_proj_channel', type=int, default=0)
     parser.add_argument('--ln_ratio', type=int, default=1)
     parser.add_argument('--aug_control', action='store_true')
+    parser.add_argument('--latent_dists', type=int, default=0)
+    parser.add_argument('--latent_dist_size', type=int, default=0)
+    parser.add_argument('--latent_proj_size', type=int, default=600)
 
     # env related
     parser.add_argument('--repeat_action_probability', type=float, default=0.25)
