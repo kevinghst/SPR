@@ -178,6 +178,7 @@ class SPRCatDqnModel(torch.nn.Module):
         else:
             self.conv_proj = nn.Identity()
 
+
         self.jumps = jumps
         self.model_rl = model_rl
         self.use_spr = spr
@@ -235,12 +236,14 @@ class SPRCatDqnModel(torch.nn.Module):
                     )
                     self.latent_merger = nn.Sequential(
                         nn.Linear(latent_dists * latent_dist_size + gru_proj_size, repr_size),
-                        self.activation()
+                        self.activation(),
+                        nn.Dropout(gru_dropout),
                     )
                 else:
                     self.latent_merger = nn.Sequential(
                         nn.Linear(gru_proj_size, repr_size),
-                        self.activation()
+                        self.activation(),
+                        nn.Dropout(gru_dropout),
                     )
 
             else:
