@@ -68,6 +68,7 @@ class SPRCatDqnModel(torch.nn.Module):
             latent_dists,
             latent_dist_size,
             latent_proj_size,
+            activation,
             use_maxpool=False,
             channels=None,  # None uses default.
             kernel_sizes=None,
@@ -83,6 +84,13 @@ class SPRCatDqnModel(torch.nn.Module):
         self.aug_prob = aug_prob
         self.classifier_type = classifier
 
+        if activation == 'relu':
+            self.activation = nn.ReLU
+        elif activation == 'elu':
+            self.activation = nn.ELU
+        else:
+            raise NotImplementedError
+
         self.distributional = distributional
         n_atoms = 1 if not self.distributional else n_atoms
         self.dqn_hidden_size = dqn_hidden_size
@@ -92,7 +100,7 @@ class SPRCatDqnModel(torch.nn.Module):
         self.batch_transforms = []
 
         self.uses_augmentation = False
-        
+
         for aug in augmentation:
             if aug == "affine":
                 transformation = RandomAffine(5, (.14, .14), (.9, 1.1), (-5, 5))
@@ -144,6 +152,7 @@ class SPRCatDqnModel(torch.nn.Module):
                 use_maxpool=False,
                 dropout=dropout,
                 conv_proj_channel=conv_proj_channel,
+                nonlinearity = self.activation
             )
         elif encoder_type == 'resnet18':
             self.conv = resnet18()
@@ -163,7 +172,7 @@ class SPRCatDqnModel(torch.nn.Module):
                 nn.Flatten(1, -1),
                 nn.Linear(self.hidden_size * self.pixels, proj_hidden_size),
                 nn.LayerNorm(proj_hidden_size),
-                nn.ReLU(),
+                self.activation(),
                 nn.Dropout(dropout),
             )
         else:
@@ -214,23 +223,24 @@ class SPRCatDqnModel(torch.nn.Module):
                     num_actions = self.num_actions,
                     renormalize=renormalize,
                     renormalize_type=renormalize_type,
-                    dropout=gru_dropout
+                    dropout=gru_dropout,
+                    nonlinearity=self.activation,
                 )
 
                 if self.use_latent:
                     self.posterior_net = nn.Sequential(
                         nn.Linear(repr_size + gru_proj_size, latent_proj_size),
-                        nn.ReLU(),
+                        self.activation(),
                         nn.Linear(latent_proj_size, latent_dists * latent_dist_size)
                     )
                     self.latent_merger = nn.Sequential(
                         nn.Linear(latent_dists * latent_dist_size + gru_proj_size, repr_size),
-                        nn.ReLU()
+                        self.activation()
                     )
                 else:
                     self.latent_merger = nn.Sequential(
                         nn.Linear(gru_proj_size, repr_size),
-                        nn.ReLU()
+                        self.activation()
                     )
 
             else:
@@ -242,7 +252,8 @@ class SPRCatDqnModel(torch.nn.Module):
                                                       blocks=dynamics_blocks,
                                                       norm_type=norm_type,
                                                       renormalize=renormalize,
-                                                      residual=residual_tm)
+                                                      residual=residual_tm,
+                                                      nonlinearity=self.activation)
         else:
             self.dynamics_model = nn.Identity()
 
@@ -1112,7 +1123,7 @@ class Conv2dModel(torch.nn.Module):
         if conv_proj_channel:
             sequence.extend([
                 nn.Conv2d(64, conv_proj_channel, kernel_size=1, stride=1, bias=False),
-                nn.ReLU()
+                nonlinearity()
             ])
 
         self.conv = torch.nn.Sequential(*sequence)
@@ -1206,7 +1217,7 @@ def from_categorical(distribution, limit=300, logits=True):
     return distribution @ weights
 
 class GRUModel(nn.Module):
-    def __init__(self, input_size, repr_size, proj_size, num_layers, num_actions, renormalize, renormalize_type, dropout):
+    def __init__(self, input_size, repr_size, proj_size, num_layers, num_actions, renormalize, renormalize_type, dropout, nonlinearity):
         super().__init__()
         self.input_size = input_size
         self.repr_size = repr_size
@@ -1220,7 +1231,7 @@ class GRUModel(nn.Module):
         if proj_size:
             self.proj_in = nn.Sequential(
                 nn.Linear(repr_size, proj_size),
-                nn.ReLU(),
+                nonlinearity(),
                 nn.Dropout(dropout)
             )
             # self.proj_out = nn.Sequential(
@@ -1288,7 +1299,9 @@ class TransitionModel(nn.Module):
                  action_dim=6,
                  norm_type="bn",
                  renormalize=True,
-                 residual=False):
+                 residual=False,
+                 nonlinearity=nn.ReLU,
+                 ):
         super().__init__()
         self.hidden_size = hidden_size
         self.num_actions = num_actions
@@ -1296,7 +1309,7 @@ class TransitionModel(nn.Module):
         self.renormalize = renormalize
         self.residual = residual
         layers = [Conv2dSame(channels+num_actions, hidden_size, 3),
-                  nn.ReLU(),
+                  nonlinearity(),
                   init_normalization(hidden_size, norm_type)]
         for _ in range(blocks):
             layers.append(ResidualBlock(hidden_size,
@@ -1310,7 +1323,8 @@ class TransitionModel(nn.Module):
         self.reward_predictor = RewardPredictor(channels,
                                                 pixels=pixels,
                                                 limit=limit,
-                                                norm_type=norm_type)
+                                                norm_type=norm_type,
+                                                nonlinearity=nonlinearity)
         self.train()
 
     def forward(self, x, action):
@@ -1340,15 +1354,16 @@ class RewardPredictor(nn.Module):
                  hidden_size=1,
                  pixels=36,
                  limit=300,
-                 norm_type="bn"):
+                 norm_type="bn",
+                 nonlinearity=nn.ReLU):
         super().__init__()
         self.hidden_size = hidden_size
         layers = [nn.Conv2d(input_channels, hidden_size, kernel_size=1, stride=1),
-                  nn.ReLU(),
+                  nonlinearity(),
                   init_normalization(hidden_size, norm_type),
                   nn.Flatten(-3, -1),
                   nn.Linear(pixels*hidden_size, 256),
-                  nn.ReLU(),
+                  nonlinearity(),
                   nn.Linear(256, limit*2 + 1)]
         self.network = nn.Sequential(*layers)
         self.train()
