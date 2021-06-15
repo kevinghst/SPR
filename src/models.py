@@ -237,13 +237,13 @@ class SPRCatDqnModel(torch.nn.Module):
                     self.latent_merger = nn.Sequential(
                         nn.Linear(latent_dists * latent_dist_size + gru_proj_size, repr_size),
                         self.activation(),
-                        # nn.Dropout(gru_dropout),
+                        nn.Dropout(gru_dropout),
                     )
                 else:
                     self.latent_merger = nn.Sequential(
                         nn.Linear(gru_proj_size, repr_size),
                         self.activation(),
-                        # nn.Dropout(gru_dropout),
+                        nn.Dropout(gru_dropout),
                     )
 
             else:
