@@ -84,13 +84,6 @@ class SPRCatDqnModel(torch.nn.Module):
         self.aug_prob = aug_prob
         self.classifier_type = classifier
 
-        if activation == 'relu':
-            self.activation = nn.ReLU
-        elif activation == 'elu':
-            self.activation = nn.ELU
-        else:
-            raise NotImplementedError
-
         self.distributional = distributional
         n_atoms = 1 if not self.distributional else n_atoms
         self.dqn_hidden_size = dqn_hidden_size
@@ -172,7 +165,7 @@ class SPRCatDqnModel(torch.nn.Module):
                 nn.Flatten(1, -1),
                 nn.Linear(self.hidden_size * self.pixels, proj_hidden_size),
                 nn.LayerNorm(proj_hidden_size),
-                self.activation(),
+                nn.ELU(),
                 nn.Dropout(dropout),
             )
         else:
@@ -225,24 +218,24 @@ class SPRCatDqnModel(torch.nn.Module):
                     renormalize=renormalize,
                     renormalize_type=renormalize_type,
                     dropout=gru_dropout,
-                    nonlinearity=self.activation,
+                    nonlinearity=nn.ELU,
                 )
 
                 if self.use_latent:
                     self.posterior_net = nn.Sequential(
                         nn.Linear(repr_size + gru_proj_size, latent_proj_size),
-                        self.activation(),
+                        nn.ELU(),
                         nn.Linear(latent_proj_size, latent_dists * latent_dist_size)
                     )
                     self.latent_merger = nn.Sequential(
                         nn.Linear(latent_dists * latent_dist_size + gru_proj_size, repr_size),
-                        self.activation(),
+                        nn.ELU(),
                         nn.Dropout(gru_dropout),
                     )
                 else:
                     self.latent_merger = nn.Sequential(
                         nn.Linear(gru_proj_size, repr_size),
-                        self.activation(),
+                        nn.ELU(),
                         nn.Dropout(gru_dropout),
                     )
 
@@ -256,7 +249,7 @@ class SPRCatDqnModel(torch.nn.Module):
                                                       norm_type=norm_type,
                                                       renormalize=renormalize,
                                                       residual=residual_tm,
-                                                      nonlinearity=self.activation)
+                                                      nonlinearity=nn.ReLU)
         else:
             self.dynamics_model = nn.Identity()
 
