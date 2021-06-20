@@ -98,7 +98,8 @@ def set_config(args, game):
     config["model"]["gru_input_size"] = args.gru_input_size
     config["model"]["gru_proj_size"] = args.gru_proj_size
     config["model"]["ln_ratio"] = args.ln_ratio
-    config["model"]["gru_dropout"] = args.gru_dropout
+    config["model"]["gru_in_dropout"] = args.gru_in_dropout
+    config["model"]["gru_out_dropout"] = args.gru_out_dropout
     config["model"]["aug_control"] = args.aug_control
     config["model"]["latent_dists"] = args.latent_dists
     config["model"]["latent_dist_size"] = args.latent_dist_size

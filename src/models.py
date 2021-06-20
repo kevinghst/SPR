@@ -62,7 +62,8 @@ class SPRCatDqnModel(torch.nn.Module):
             proj_hidden_size,
             gru_input_size,
             gru_proj_size,
-            gru_dropout,
+            gru_in_dropout,
+            gru_out_dropout,
             ln_ratio,
             aug_control,
             latent_dists,
@@ -217,7 +218,7 @@ class SPRCatDqnModel(torch.nn.Module):
                     num_actions = self.num_actions,
                     renormalize=renormalize,
                     renormalize_type=renormalize_type,
-                    dropout=gru_dropout,
+                    dropout=gru_in_dropout,
                     nonlinearity=nn.ELU,
                 )
 
@@ -230,13 +231,14 @@ class SPRCatDqnModel(torch.nn.Module):
                     self.latent_merger = nn.Sequential(
                         nn.Linear(latent_dists * latent_dist_size + gru_proj_size, repr_size),
                         nn.ELU(),
-                        nn.Dropout(gru_dropout),
+                        nn.Dropout(gru_out_dropout),
                     )
+
                 else:
-                    self.latent_merger = nn.Sequential(
+                    self.gru_proj_out = nn.Sequential(
                         nn.Linear(gru_proj_size, repr_size),
                         nn.ELU(),
-                        nn.Dropout(gru_dropout),
+                        nn.Dropout(gru_out_dropout),
                     )
 
             else:
@@ -641,7 +643,10 @@ class SPRCatDqnModel(torch.nn.Module):
                 else:
                     for j in range(1, self.jumps + 1):
                         if self.use_latent:
-                            embed = self.stem_forward(input_obs[:,j,:,:,:], prev_action[j], prev_reward[j])
+
+                            with torch.no_grad():
+                                embed = self.stem_forward(input_obs[:,j,:,:,:], prev_action[j], prev_reward[j])
+
                             if self.transition_type == 'gru':
                                 embed = embed.flatten(1, -1)
                         else:
@@ -720,8 +725,13 @@ class SPRCatDqnModel(torch.nn.Module):
                 next_logits = self.posterior_net(torch.cat((next_embed, next_state), dim=1)) # [bs, 3136 + 600]
                 next_stoch = self.sample_discrete(next_logits)
                 next_repr = self.latent_merger(torch.cat((next_state, next_stoch), dim=1))
+
+                # next_repr = self.gru_proj_out(next_state)
+                # next_stoch = self.latent_embed(next_stoch)
+                # next_repr += next_stoch
             else:
-                next_repr = self.latent_merger(next_state)
+                next_repr = self.gru_proj_out(next_state)
+
             next_repr = self.renormalize_tensor(next_repr)
             next_state = (next_repr, next_state)
         else:
