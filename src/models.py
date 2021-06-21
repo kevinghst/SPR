@@ -223,6 +223,12 @@ class SPRCatDqnModel(torch.nn.Module):
                 )
 
                 if self.use_latent:
+                    self.prior_net = nn.Sequential(
+                        nn.Linear(gru_proj_size, latent_proj_size),
+                        nn.ELU(),
+                        nn.Linear(latent_proj_size, latent_dists * latent_dist_size)
+                    )
+
                     self.posterior_net = nn.Sequential(
                         nn.Linear(repr_size + gru_proj_size, latent_proj_size),
                         nn.ELU(),
@@ -504,6 +510,25 @@ class SPRCatDqnModel(torch.nn.Module):
                                       self.momentum_tau)
         return spr_loss
 
+    def latent_kl_loss(self, posteriors, priors):
+        # [bs * jumps, 32 * 32]
+        if not posteriors:
+            return torch.zeros(())
+
+        bs = posteriors.shape[0]
+        posteriors = torch.reshape(posteriors, (bs, self.latent_dists, self.latent_dist_size))
+        priors = torch.reshape(priors, (bs, self.latent_dists, self.latent_dist_size))
+
+        # [bs * jumps, 32, 32]
+
+        left_kl = torch.nn.KLDivLoss()(F.log_softmax(posteriors.detach()), F.softmax(priors))
+        right_kl = torch.nnKLDivLoss()(F.log_softmax(priors), F.softmax(posteriors))
+
+
+
+        return None
+
+
     def apply_transforms(self, transforms, eval_transforms, image):
         if eval_transforms is None:
             for transform in transforms:
@@ -592,6 +617,8 @@ class SPRCatDqnModel(torch.nn.Module):
             log_pred_ps = []
             pred_reward = []
             pred_latents = []
+            priors = []
+            posteriors = []
 
 
             if self.aug_control or self.use_latent:
@@ -652,7 +679,12 @@ class SPRCatDqnModel(torch.nn.Module):
                         else:
                             embed = None
 
-                        latent, pred_rew = self.step(latent, prev_action[j], embed) # latent.shape = [32, 64, 7, 7]
+                        latent, pred_rew, posterior_logits, prior_logits = self.step(latent, prev_action[j], embed)
+                        # latent.shape = [32, 64, 7, 7]
+
+                        if posterior_logits is not None:
+                            priors.append(prior_logits)
+                            posteriors.append(posterior_logits)
 
                         pred_rew = pred_rew[:observation.shape[1]]
                         pred_reward.append(F.log_softmax(pred_rew, -1))
@@ -676,6 +708,8 @@ class SPRCatDqnModel(torch.nn.Module):
             else:
                 spr_loss = torch.zeros((self.jumps + 1, observation.shape[1]), device=latent.device)
                 pred_l2_loss = torch.zeros(())
+
+            latent_kl_loss = self.latent_kl_loss(torch.cat(posteriors), torch.cat(priors))
 
             return log_pred_ps, pred_reward, spr_loss, pred_l2_loss #[6, 32]
 
@@ -719,12 +753,15 @@ class SPRCatDqnModel(torch.nn.Module):
 
     def step(self, state, action, next_embed):
         next_state = self.dynamics_model(state, action)
+        posterior_logits, prior_logits = None, None
 
         if self.transition_type == 'gru':
             if self.use_latent:
-                next_logits = self.posterior_net(torch.cat((next_embed, next_state), dim=1)) # [bs, 3136 + 600]
-                next_stoch = self.sample_discrete(next_logits)
+                posterior_logits = self.posterior_net(torch.cat((next_embed, next_state), dim=1)) # [bs, 3136 + 600]
+                next_stoch = self.sample_discrete(posterior_logits)
                 next_repr = self.latent_merger(torch.cat((next_state, next_stoch), dim=1))
+
+                prior_logits = self.prior_net(next_state)
 
                 # next_repr = self.gru_proj_out(next_state)
                 # next_stoch = self.latent_embed(next_stoch)
@@ -749,7 +786,7 @@ class SPRCatDqnModel(torch.nn.Module):
         else:
             reward_logits = self.dynamics_model.reward_predictor(next_state)
 
-        return next_state, reward_logits
+        return next_state, reward_logits, posterior_logits, prior_logits
 
     def sample_discrete(self, logits):
         # logits.shape = [bs, 1024]
