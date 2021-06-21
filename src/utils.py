@@ -1,9 +1,11 @@
 from rlpyt.experiments.configs.atari.dqn.atari_dqn import configs
-
+import pdb
 
 def count_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
+def kl_loss(p, q):
+    return (p * (p/q).log()).sum(dim=-1)
 
 class dummy_context_mgr:
     def __enter__(self):
@@ -105,7 +107,9 @@ def set_config(args, game):
     config["model"]["latent_dist_size"] = args.latent_dist_size
     config["model"]["latent_proj_size"] = args.latent_proj_size
     config["model"]["activation"] = args.activation
+    config["model"]["kl_balance"] = args.kl_balance
 
+    config["algo"]["kl_reg"] = args.kl_reg
     config["algo"]["pred_decay"] = args.pred_decay
 
     return config

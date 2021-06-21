@@ -37,6 +37,7 @@ class SPRCategoricalDQN(CategoricalDQN):
                  reward_loss_weight=1.,
                  model_spr_weight=1.,
                  pred_decay=0.,
+                 kl_reg=0.1,
                  time_offset=0,
                  distributional=1,
                  jumps=0,
@@ -46,6 +47,7 @@ class SPRCategoricalDQN(CategoricalDQN):
         self.t0_spr_loss_weight = t0_spr_loss_weight
         self.model_spr_weight = model_spr_weight
         self.pred_decay = pred_decay
+        self.kl_reg = kl_reg
 
         self.reward_loss_weight = reward_loss_weight
         self.model_rl_weight = model_rl_weight
@@ -133,9 +135,10 @@ class SPRCategoricalDQN(CategoricalDQN):
             samples_from_replay = self.replay_buffer.sample_batch(self.batch_size)
 
             loss, td_abs_errors, model_rl_loss, reward_loss,\
-            t0_spr_loss, model_spr_loss, pred_l2_loss = self.loss(samples_from_replay)
+            t0_spr_loss, model_spr_loss, pred_l2_loss, latent_kl_loss = self.loss(samples_from_replay)
             spr_loss = self.t0_spr_loss_weight*t0_spr_loss + self.model_spr_weight*model_spr_loss
             spr_loss += pred_l2_loss * self.pred_decay
+            spr_loss += latent_kl_loss * self.kl_reg
             total_loss = loss + self.model_rl_weight*model_rl_loss \
                               + self.reward_loss_weight*reward_loss
             total_loss = total_loss + spr_loss
@@ -271,7 +274,7 @@ class SPRCategoricalDQN(CategoricalDQN):
         if self.model.noisy:
             self.model.head.reset_noise()
         # start = time.time()
-        log_pred_ps, pred_rew, spr_loss, pred_l2_loss\
+        log_pred_ps, pred_rew, spr_loss, pred_l2_loss, latent_kl_loss\
             = self.agent(samples.all_observation.to(self.agent.device),
                          samples.all_action.to(self.agent.device),
                          samples.all_reward.to(self.agent.device),
@@ -311,6 +314,8 @@ class SPRCategoricalDQN(CategoricalDQN):
         spr_loss = spr_loss.cpu()
         model_spr_loss = model_spr_loss.cpu()
         reward_loss = reward_loss.cpu()
+        latent_kl_loss = latent_kl_loss.cpu()
+
         if self.prioritized_replay:
             weights = samples.is_weights
             spr_loss = spr_loss * weights
@@ -327,4 +332,4 @@ class SPRCategoricalDQN(CategoricalDQN):
                reward_loss.mean(), \
                spr_loss.mean(), \
                model_spr_loss.mean(), \
-               pred_l2_loss
+               pred_l2_loss, latent_kl_loss

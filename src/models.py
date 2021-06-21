@@ -4,7 +4,7 @@ import torch.nn as nn
 
 from rlpyt.models.utils import scale_grad, update_state_dict
 from rlpyt.utils.tensor import infer_leading_dims, restore_leading_dims
-from src.utils import count_parameters, dummy_context_mgr
+from src.utils import count_parameters, dummy_context_mgr, kl_loss
 import numpy as np
 from kornia.augmentation import RandomAffine,\
     RandomCrop,\
@@ -69,6 +69,7 @@ class SPRCatDqnModel(torch.nn.Module):
             latent_dists,
             latent_dist_size,
             latent_proj_size,
+            kl_balance,
             activation,
             use_maxpool=False,
             channels=None,  # None uses default.
@@ -204,6 +205,7 @@ class SPRCatDqnModel(torch.nn.Module):
         self.latent_dists = latent_dists
         self.latent_dist_size = latent_dist_size
         self.use_latent = True if latent_dists and latent_dist_size else False
+        self.kl_balance = kl_balance
 
 
         if self.jumps > 0:
@@ -512,21 +514,26 @@ class SPRCatDqnModel(torch.nn.Module):
 
     def latent_kl_loss(self, posteriors, priors):
         # [bs * jumps, 32 * 32]
+
         if not posteriors:
-            return torch.zeros(())
+            return torch.tensor(0.).to(posteriors.device)
+
+        posteriors = torch.cat(posteriors)
+        priors = torch.cat(priors)
 
         bs = posteriors.shape[0]
-        posteriors = torch.reshape(posteriors, (bs, self.latent_dists, self.latent_dist_size))
-        priors = torch.reshape(priors, (bs, self.latent_dists, self.latent_dist_size))
+        posteriors = posteriors.view(bs * self.latent_dists, self.latent_dist_size)
+        priors = priors.view(bs * self.latent_dists, self.latent_dist_size)
 
-        # [bs * jumps, 32, 32]
+        left_kl = torch.nn.KLDivLoss(reduction='batchmean')(F.log_softmax(posteriors, dim=-1), F.softmax(priors.detach(), dim=-1))
+        right_kl = torch.nn.KLDivLoss(reduction='batchmean')(F.log_softmax(posteriors.detach(), dim=-1), F.softmax(priors, dim=-1))
 
-        left_kl = torch.nn.KLDivLoss()(F.log_softmax(posteriors.detach()), F.softmax(priors))
-        right_kl = torch.nnKLDivLoss()(F.log_softmax(priors), F.softmax(posteriors))
+        left_kl = max(left_kl, torch.tensor(0.).to(left_kl.device))
+        right_kl = max(right_kl, torch.tensor(0.).to(right_kl.device))
 
+        kl_loss = (1-self.kl_balance) * left_kl + self.kl_balance * right_kl
 
-
-        return None
+        return kl_loss
 
 
     def apply_transforms(self, transforms, eval_transforms, image):
@@ -709,9 +716,9 @@ class SPRCatDqnModel(torch.nn.Module):
                 spr_loss = torch.zeros((self.jumps + 1, observation.shape[1]), device=latent.device)
                 pred_l2_loss = torch.zeros(())
 
-            latent_kl_loss = self.latent_kl_loss(torch.cat(posteriors), torch.cat(priors))
+            latent_kl_loss = self.latent_kl_loss(posteriors, priors)
 
-            return log_pred_ps, pred_reward, spr_loss, pred_l2_loss #[6, 32]
+            return log_pred_ps, pred_reward, spr_loss, pred_l2_loss, latent_kl_loss #[6, 32]
 
         else:
             aug_factor = self.target_augmentation if not eval else self.eval_augmentation
@@ -793,7 +800,7 @@ class SPRCatDqnModel(torch.nn.Module):
 
         # straight through gradient
         bs = logits.shape[0]
-        logits = torch.reshape(logits, (bs, self.latent_dists, self.latent_dist_size))
+        logits = logits.view(bs, self.latent_dists, self.latent_dist_size)
         sm = nn.Softmax(dim=2)
         probs = sm(logits)
 
@@ -801,8 +808,7 @@ class SPRCatDqnModel(torch.nn.Module):
         samples = m.sample()
 
         samples = samples + probs - probs.detach()
-
-        samples = torch.reshape(samples, (bs, self.latent_dists * self.latent_dist_size))
+        samples = samples.view(bs, self.latent_dists * self.latent_dist_size)
 
         return samples
 

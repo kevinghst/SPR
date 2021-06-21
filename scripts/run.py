@@ -151,6 +151,8 @@ if __name__ == "__main__":
     parser.add_argument('--latent_dist_size', type=int, default=0)
     parser.add_argument('--latent_proj_size', type=int, default=600)
     parser.add_argument('--activation', type=str, choices=['relu', 'elu'], default='relu')
+    parser.add_argument('--kl_balance', type=float, default=0.8)
+    parser.add_argument('--kl_reg', type=float, default=0.1)
 
     # env related
     parser.add_argument('--repeat_action_probability', type=float, default=0.25)
