@@ -517,9 +517,8 @@ class SPRCatDqnModel(torch.nn.Module):
 
     def latent_kl_loss(self, posteriors, priors):
         # [bs * jumps, 32 * 32]
-
         if not posteriors:
-            return torch.tensor(0.).to(posteriors.device)
+            return torch.tensor(0.)
 
         posteriors = torch.cat(posteriors)
         priors = torch.cat(priors)
