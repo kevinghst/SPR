@@ -326,7 +326,6 @@ class SPRCategoricalDQN(CategoricalDQN):
             rl_loss = rl_loss * weights
             model_rl_loss = model_rl_loss * weights
 
-
         return rl_loss.mean(), KL, \
                model_rl_loss.mean(),\
                reward_loss.mean(), \
