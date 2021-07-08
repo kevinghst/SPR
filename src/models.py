@@ -329,6 +329,10 @@ class SPRCatDqnModel(torch.nn.Module):
                 elif self.classifier_type == "q_l1":
                     self.global_classifier = QL1Head(self.head, dueling=dueling, type=q_l1_type)
                     global_spr_size = self.global_classifier.out_features
+
+                    if self.aug_control:
+                        self.batch_norm_proj = nn.BatchNorm1d(global_spr_size)
+
                     self.global_target_classifier = self.global_classifier
                 elif self.classifier_type == "q_l2":
                     self.global_classifier = nn.Sequential(self.head, nn.Flatten(-2, -1))
@@ -363,11 +367,15 @@ class SPRCatDqnModel(torch.nn.Module):
 
             if self.momentum_encoder:
                 self.target_encoder = copy.deepcopy(self.conv)
+                self.target_batch_norm = copy.deepcopy(self.batch_norm)
+                self.target_batch_norm_proj = copy.deepcopy(self.batch_norm_proj)
                 self.target_encoder_proj = copy.deepcopy(self.conv_proj)
                 self.target_renormalize_ln = copy.deepcopy(self.renormalize_ln)
                 self.global_target_classifier = copy.deepcopy(self.global_target_classifier)
                 self.local_target_classifier = copy.deepcopy(self.local_target_classifier)
                 for param in (list(self.target_encoder.parameters())
+                            + list(self.target_batch_norm.parameters())
+                            + list(self.target_batch_norm_proj.parameters())
                             + list(self.target_encoder_proj.parameters())
                             + list(self.target_renormalize_ln.parameters())
                             + list(self.global_target_classifier.parameters())
@@ -424,9 +432,13 @@ class SPRCatDqnModel(torch.nn.Module):
     def global_spr_loss(self, latents, target_latents, observation):
                             # [192, 600], [192, 600],  [16, 32, 4, 1, 84, 84]
         global_latents = self.global_classifier(latents)
-        global_latents = self.global_final_classifier(global_latents)
+        global_latents = self.global_final_classifier(global_latents) #[192, 512]
+
+        global_latents = self.batch_norm_proj(global_latents)
+
         with torch.no_grad() if self.momentum_encoder else dummy_context_mgr():
             global_targets = self.global_target_classifier(target_latents)
+            global_targets = self.target_batch_norm_proj(global_targets)
         targets = global_targets.view(-1, observation.shape[1],
                                              self.jumps+1, global_targets.shape[-1]).transpose(1, 2)
         latents = global_latents.view(-1, observation.shape[1],
@@ -472,6 +484,8 @@ class SPRCatDqnModel(torch.nn.Module):
             if self.renormalize:
                 target_latents = self.renormalize_tensor(target_latents, first_dim=-3, target=True)
 
+            target_latents = self.target_batch_norm(target_latents)
+
         target_latents = self.target_encoder_proj(target_latents)
 
         if self.local_spr:
@@ -498,6 +512,12 @@ class SPRCatDqnModel(torch.nn.Module):
             )
 
             update_state_dict(
+                self.target_batch_norm,
+                self.batch_norm.state_dict(),
+                self.momentum_tau
+            )
+
+            update_state_dict(
                 self.target_encoder_proj,
                 self.conv_proj.state_dict(),
                 self.momentum_tau
@@ -513,6 +533,10 @@ class SPRCatDqnModel(torch.nn.Module):
                     update_state_dict(self.global_target_classifier,
                                       self.global_classifier.state_dict(),
                                       self.momentum_tau)
+                    update_state_dict(self.target_batch_norm_proj,
+                                      self.batch_norm_proj.state_dict(),
+                                      self.momentum_tau
+                                      )
         return spr_loss
 
     def latent_kl_loss(self, posteriors, priors):
