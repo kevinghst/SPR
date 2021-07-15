@@ -183,9 +183,6 @@ class SPRCatDqnModel(torch.nn.Module):
         self.transition_type = transition_type
         self.aug_control = aug_control
 
-        if self.aug_control:
-            self.batch_norm = init_normalization(64, type="bn")
-
         if dueling:
             self.head = DQNDistributionalDuelingHeadModel(self.hidden_size,
                                                           output_size,
@@ -670,7 +667,6 @@ class SPRCatDqnModel(torch.nn.Module):
                         pred_reward.append(pred_rew)
 
                         latent = self.stem_forward(input_obs[:,j,:,:,:], prev_action[j], prev_reward[j])
-                        latent = self.batch_norm(latent)
 
                         if self.transition_type == 'gru':
                             latent = latent.flatten(1, -1)
@@ -784,12 +780,6 @@ class SPRCatDqnModel(torch.nn.Module):
         else:
             next_state = self.renormalize_tensor(next_state, first_dim=1)
 
-        # if self.renormalize:
-        #     if isinstance(next_state, tuple):
-        #         next_repr = self.renormalize_tensor(next_state[0], flat=True)
-        #         next_state = (next_repr, next_state[1])
-        #     else:
-        #         next_state = self.renormalize_tensor(next_state, first_dim=1)
 
         if isinstance(next_state, tuple):
             reward_logits = self.dynamics_model.reward_predictor(next_state[0])
