@@ -762,6 +762,8 @@ class SPRCatDqnModel(torch.nn.Module):
             if self.renormalize:
                 conv_out = self.renormalize_tensor(conv_out, first_dim=-3)
 
+            conv_out = self.batch_norm(conv_out)
+
             p = self.head(conv_out)
 
             if self.distributional:
