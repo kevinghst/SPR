@@ -108,6 +108,7 @@ def set_config(args, game):
     config["model"]["latent_proj_size"] = args.latent_proj_size
     config["model"]["activation"] = args.activation
     config["model"]["kl_balance"] = args.kl_balance
+    config["model"]["debug"] = args.debug
 
     config["algo"]["kl_reg"] = args.kl_reg
     config["algo"]["pred_decay"] = args.pred_decay

@@ -135,6 +135,7 @@ if __name__ == "__main__":
     parser.add_argument('--cuda_idx', help='gpu to use ', type=int, default=0)
     parser.add_argument('--max-grad-norm', type=float, default=10., help='Max Grad Norm')
     parser.add_argument('--skip_init_eval', action='store_true', help='no initial evaluation')
+    parser.add_argument('--debug', action="store_true")
 
     # model
     parser.add_argument('--encoder_type', type=str, default='conv2d', choices=["conv2d", "resnet18"])

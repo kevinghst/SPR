@@ -70,6 +70,7 @@ class SPRCatDqnModel(torch.nn.Module):
             latent_dist_size,
             latent_proj_size,
             kl_balance,
+            debug,
             activation,
             use_maxpool=False,
             channels=None,  # None uses default.
@@ -81,6 +82,7 @@ class SPRCatDqnModel(torch.nn.Module):
         """Instantiates the neural network according to arguments; network defaults
         stored within this method."""
         super().__init__()
+        self.debug = debug
         self.noisy = noisy_nets
         self.time_offset = time_offset
         self.aug_prob = aug_prob
@@ -466,6 +468,7 @@ class SPRCatDqnModel(torch.nn.Module):
         neg_latents = pred_latents[observation.shape[1]:].flatten(0, 1)
         latents = torch.cat([latents, neg_latents], 0)
         target_images = observation[self.time_offset:self.jumps + self.time_offset+1].transpose(0, 1).flatten(2, 3)
+
         # [16, 32, 4, 1, 84, 84] --> [32, 6, 4, 84, 84]
         target_images = self.transform(target_images, True)
 
@@ -660,6 +663,7 @@ class SPRCatDqnModel(torch.nn.Module):
                 input_obs = self.transform(input_obs, augment=True) # [32, 4, 84, 84]
                 first_input_obs = input_obs
 
+
             latent = self.stem_forward(first_input_obs,
                                        prev_action[0],
                                        prev_reward[0]) # [32, 64, 7, 7]
@@ -799,12 +803,6 @@ class SPRCatDqnModel(torch.nn.Module):
         else:
             next_state = self.renormalize_tensor(next_state, first_dim=1)
 
-        # if self.renormalize:
-        #     if isinstance(next_state, tuple):
-        #         next_repr = self.renormalize_tensor(next_state[0], flat=True)
-        #         next_state = (next_repr, next_state[1])
-        #     else:
-        #         next_state = self.renormalize_tensor(next_state, first_dim=1)
 
         if isinstance(next_state, tuple):
             reward_logits = self.dynamics_model.reward_predictor(next_state[0])
